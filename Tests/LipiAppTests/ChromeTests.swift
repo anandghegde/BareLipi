@@ -116,3 +116,39 @@ struct ZoomTests {
         #expect(!wc.validateMenuItem(item))
     }
 }
+
+@Suite("Window chrome: writing modes")
+@MainActor
+struct WritingModeWindowTests {
+    private func window() -> DocumentWindowController {
+        let controller = EditorController(text: "# A\n\nText.\n", viewportWidth: 800)
+        return DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+    }
+
+    @Test func zenHidesChromeAndRestoresIt() {
+        let wc = window()
+        wc.setOutlineVisible(true, focus: false)
+        wc.toggleZenMode(nil)
+        #expect(wc.isZenMode)
+        #expect(!wc.isOutlineVisible)
+        #expect(wc.chrome.statusBar.isHidden)
+        #expect(wc.editorState().showsOutline == true)
+        wc.toggleZenMode(nil)
+        #expect(!wc.isZenMode)
+        #expect(wc.isOutlineVisible)
+        #expect(!wc.chrome.statusBar.isHidden)
+    }
+
+    @Test func focusAndTypewriterAreRestored() {
+        let wc = window()
+        wc.editor.focusMode = true
+        wc.editor.typewriterMode = true
+        let state = wc.editorState()
+        #expect(state.focusMode == true && state.typewriter == true)
+        let other = window()
+        other.apply(state)
+        #expect(other.editor.focusMode && other.editor.typewriterMode)
+        let item = NSMenuItem(title: "Focus Mode", action: #selector(EditorView.toggleFocusMode(_:)), keyEquivalent: "")
+        #expect(other.editor.validateMenuItem(item) && item.state == .on)
+    }
+}

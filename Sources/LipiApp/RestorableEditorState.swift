@@ -22,6 +22,10 @@ public struct RestorableEditorState: Codable, Sendable, Equatable {
     public var scrollOffset: Double
     /// The outline sidebar is open (§6.8); nil in state from older builds.
     public var showsOutline: Bool?
+    /// Focus mode (§6.12, F8); nil in state from older builds.
+    public var focusMode: Bool?
+    /// Typewriter mode (§6.12, F9); nil in state from older builds.
+    public var typewriter: Bool?
 
     public init(anchor: Int, head: Int, scrollAnchor: Int, scrollOffset: Double) {
         self.anchor = anchor

@@ -23,6 +23,16 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private var linkPopover: LinkPopover?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
+    /// Focus mode (§6.12, F8): blocks other than the caret's are dimmed.
+    public var focusMode = false { didSet { needsDisplay = true } }
+    /// Typewriter mode (§6.12, F9): the caret line stays at mid-height.
+    public var typewriterMode = false {
+        didSet {
+            syncFrameHeight()
+            if typewriterMode { centerCaret() }
+        }
+    }
+    var isMouseSelecting: Bool { mouseAnchor != nil }
 
     public init(controller: EditorController, frame: NSRect = NSRect(x: 0, y: 0, width: 800, height: 600)) {
         self.controller = controller
@@ -60,7 +70,11 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
             clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
             enclosingScrollView?.reflectScrolledClipView(clip)
         }
-        scrollCaretToVisible(change.caretRect)
+        if typewriterMode, !isMouseSelecting {
+            centerCaret(change.caretRect)
+        } else {
+            scrollCaretToVisible(change.caretRect)
+        }
     }
 
     private func scrollCaretToVisible(_ rect: CGRect) {
@@ -73,9 +87,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         setNeedsDisplay(controller.caretRect(forSource: controller.caret).insetBy(dx: -2, dy: -1))
     }
 
-    private func syncFrameHeight() {
+    func syncFrameHeight() {
         let minimum = enclosingScrollView?.contentSize.height ?? 0
-        let height = max(controller.contentHeight + controller.lineHeight * 2, minimum).rounded(.up)
+        let height = max(controller.contentHeight + controller.lineHeight * 2 + typewriterPadding, minimum).rounded(.up)
         if abs(frame.height - height) >= 0.5 { setFrameSize(NSSize(width: frame.width, height: height)) }
     }
 
@@ -176,6 +190,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
                 ctx.fill(CGRect(x: rect.minX, y: rect.maxY - 2, width: max(rect.width, 2), height: 1.5))
             }
         }
+        if focusMode { dimOutsideFocus(in: ctx, dirty: dirty) }
         let focused = alwaysShowsCaret || window?.firstResponder === self
         if focused, caret.visible, selection.isEmpty || controller.hasMarkedText {
             var rect = controller.caretRect(forSource: controller.caret)
@@ -427,6 +442,12 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(copy(_:)), #selector(cut(_:)): return !controller.selection.isEmpty
         case #selector(toggleSourceMode(_:)):
             item.state = controller.mode == .source ? .on : .off
+            return true
+        case #selector(toggleFocusMode(_:)):
+            item.state = focusMode ? .on : .off
+            return true
+        case #selector(toggleTypewriterMode(_:)):
+            item.state = typewriterMode ? .on : .off
             return true
         default: return true
         }

@@ -37,6 +37,10 @@ public enum MainMenu {
         return item
     }
 
+    private static func functionKey(_ key: Int) -> String {
+        String(Character(UnicodeScalar(UInt16(key))!))
+    }
+
     private static func appMenu(_ name: String) -> NSMenu {
         let menu = NSMenu(title: name)
         menu.addItem(item("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
@@ -156,6 +160,10 @@ public enum MainMenu {
         menu.addItem(editorItem(#selector(EditorView.toggleSourceMode(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Outline", #selector(DocumentWindowController.toggleOutline(_:)), "2", [.command, .control]))
+        menu.addItem(.separator())
+        menu.addItem(item("Focus Mode", #selector(EditorView.toggleFocusMode(_:)), functionKey(NSF8FunctionKey), [.function]))
+        menu.addItem(item("Typewriter Mode", #selector(EditorView.toggleTypewriterMode(_:)), functionKey(NSF9FunctionKey), [.function]))
+        menu.addItem(item("Zen Mode", #selector(DocumentWindowController.toggleZenMode(_:)), "f", [.command, .control, .shift]))
         menu.addItem(.separator())
         menu.addItem(item("Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "="))
         let zoomInPlus = item("Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "+")

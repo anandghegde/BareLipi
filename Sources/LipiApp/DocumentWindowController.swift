@@ -16,6 +16,8 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
     public var controller: EditorController { editor.controller }
     /// Called when the viewport scrolls (restorable state).
     var onScroll: (() -> Void)?
+    /// What zen mode hid and must put back (§6.12); nil outside zen mode.
+    var zenRestore: ZenRestore?
 
     public init(controller: EditorController, theme: Theme, contentRect: NSRect = NSRect(x: 0, y: 0, width: 1100, height: 760)) {
         let (scroll, editor) = EditorHost.makeScrollView(controller: controller, theme: theme, frame: contentRect)
@@ -77,7 +79,9 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         let selection = controller.selection
         var state = RestorableEditorState(anchor: selection.anchor, head: selection.head, scrollAnchor: anchor,
                                           scrollOffset: Double(visible.minY - lineTop))
-        state.showsOutline = isOutlineVisible
+        state.showsOutline = zenRestore?.outline ?? isOutlineVisible
+        state.focusMode = editor.focusMode
+        state.typewriter = editor.typewriterMode
         return state
     }
 
@@ -85,6 +89,8 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
     public func apply(_ state: RestorableEditorState) {
         let s = state.clamped(to: controller.count)
         if let shows = s.showsOutline, shows != isOutlineVisible { setOutlineVisible(shows, focus: false) }
+        if let focus = s.focusMode { editor.focusMode = focus }
+        if let typewriter = s.typewriter { editor.typewriterMode = typewriter }
         controller.moveCaret(to: s.anchor)
         if s.head != s.anchor { controller.moveCaret(to: s.head, extend: true) }
         let lineTop = controller.caretRect(forSource: s.scrollAnchor).minY

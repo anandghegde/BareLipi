@@ -351,6 +351,14 @@ public final class EditorController {
 
     // MARK: Commands (§6.1.5)
 
+    /// Focus mode's scope (§6.12): the innermost selectable block around
+    /// the caret (a paragraph, heading, list item, table or code block);
+    /// nil between blocks.
+    public var focusScope: Range<Int>? {
+        let c = commands
+        return c.selectableBlocks(at: caret).first.map(c.blockRange)
+    }
+
     var commands: MarkdownCommands {
         MarkdownCommands(rope: buffer.rope, index: parser.index, selection: selection, settings: settings)
     }

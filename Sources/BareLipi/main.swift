@@ -68,7 +68,7 @@ MainActor.assumeIsolated {
     let delegate = AppDelegate()
     app.delegate = delegate
     let mark = CACurrentMediaTime()
-    app.mainMenu = MainMenu.build(documents: false)
+    MainMenu.install(documents: false)
     LaunchTracker.shared.phases.menu = CACurrentMediaTime() - mark
     app.run()
 }

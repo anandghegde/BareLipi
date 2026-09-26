@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let delegate = AppDelegate()
         app.delegate = delegate
         let mark = CACurrentMediaTime()
-        app.mainMenu = MainMenu.build(appName: "BareLipi", documents: true)
+        MainMenu.install(appName: "BareLipi", documents: true)
         LaunchTracker.shared.phases.menu = CACurrentMediaTime() - mark
         app.run()
     }

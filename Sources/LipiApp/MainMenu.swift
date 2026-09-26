@@ -62,6 +62,7 @@ public enum MainMenu {
         menu.addItem(item("New Tab", #selector(NSResponder.newWindowForTab(_:)), "t"))
         menu.addItem(item("Open…", #selector(NSDocumentController.openDocument(_:)), "o"))
         if documents {
+            menu.addItem(item("Quick Open…", #selector(LipiDocumentController.showQuickOpen(_:)), "p"))
             // NSDocumentController fills the submenu that holds clearRecentDocuments:.
             let recent = NSMenu(title: "Open Recent")
             recent.addItem(item("Clear Menu", #selector(NSDocumentController.clearRecentDocuments(_:))))

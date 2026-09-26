@@ -254,7 +254,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private static let usKeys: [UInt16: String] = [
-        32: "u", 31: "o", 7: "x", 12: "q", 8: "c", 11: "b", 27: "-", 24: "=", 34: "i",
+        32: "u", 31: "o", 7: "x", 12: "q", 8: "c", 11: "b", 27: "-", 24: "=", 34: "i", 15: "r",
     ]
 
     /// Every editor command with its key equivalent (§6.1.5, §6.2), for the
@@ -286,6 +286,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         .init("Code Block", "c", [.command, .option], #selector(insertCodeFence(_:))),
         .init("Math Block", "b", [.command, .option], #selector(insertMathBlock(_:))),
         .init("Horizontal Rule", "-", [.command, .option], #selector(insertThematicBreak(_:))),
+        .init("Footnote", "r", [.command, .option], #selector(insertFootnote(_:))),
         .init("Exit Block", "\r", [.command], #selector(exitBlock(_:))),
         .init("Duplicate Block", "d", [.command, .shift], #selector(duplicateBlock(_:))),
     ]
@@ -408,6 +409,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     @objc public func insertMathBlock(_ sender: Any?) { controller.insertMathBlock() }
     @objc public func insertThematicBreak(_ sender: Any?) { controller.insertThematicBreak() }
     @objc public func exitBlock(_ sender: Any?) { controller.exitBlock() }
+    @objc public func insertFootnote(_ sender: Any?) { controller.insertFootnote() }
     @objc public func insertHardBreak(_ sender: Any?) { controller.insertHardBreak() }
 
     @objc public func undo(_ sender: Any?) { controller.undo() }
@@ -458,6 +460,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.toggleTask(at: point) { return }
         guard let offset = controller.sourceOffset(at: point) else { return }
         if event.clickCount == 2 {
             let word = controller.wordRange(at: offset)

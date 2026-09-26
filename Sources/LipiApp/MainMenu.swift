@@ -115,6 +115,7 @@ public enum MainMenu {
             #selector(EditorView.toggleStrong(_:)), #selector(EditorView.toggleEmphasis(_:)),
             #selector(EditorView.toggleStrikethrough(_:)), #selector(EditorView.toggleCodeSpan(_:)),
             #selector(EditorView.insertLink(_:)), #selector(EditorView.insertImage(_:)),
+            #selector(EditorView.insertFootnote(_:)),
         ]
         let headings: [Selector] = [
             #selector(EditorView.setHeading1(_:)), #selector(EditorView.setHeading2(_:)), #selector(EditorView.setHeading3(_:)),

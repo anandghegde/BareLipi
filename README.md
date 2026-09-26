@@ -66,3 +66,9 @@ Requires Xcode 26 / Swift 6.3 and macOS 15 or later at runtime.
   | Re-parse after a blank line splits a block | 0.11 ms |
 - [ ] Layout spike: `LipiLayout` versus headless TextKit 2 (ADR-002 go/no-go)
 - [ ] Performance harness and fixtures (PRD §9.1)
+
+## Licence
+
+BareLipi is released under the [MIT License](LICENSE).
+
+`Sources/CCmarkGFM` vendors [cmark-gfm](https://github.com/github/cmark-gfm), which keeps its own licence (BSD-2-Clause for cmark, MIT for the bundled houdini and utf8proc-derived code) in `Sources/CCmarkGFM/COPYING`; BareLipi's patches to it are MIT. The spec files under `Tests/LipiCoreTests/Fixtures` are the CommonMark and GFM specifications, licensed CC-BY-SA 4.0 by their authors.

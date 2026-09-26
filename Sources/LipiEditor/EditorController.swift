@@ -39,7 +39,24 @@ public final class EditorController {
     public private(set) var stats = Stats()
     /// Called after every pipeline run.
     public var onChange: ((EditorChange) -> Void)?
-    private var typingGroupOpen = false
+    /// Hybrid (§6.1) or source (§6.2) presentation. Edits are identical in both.
+    public private(set) var mode: EditorMode = .hybrid
+    /// Settings the commands read (emphasis marker, hard break, auto-pair).
+    public var settings = EditorSettings()
+    /// Seconds on a monotonic clock; injectable so tests can drive undo coalescing.
+    public var clock: () -> Double = { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+    /// Typing coalesces into one undo step until this pause (seconds).
+    public var coalescingInterval: Double = 1
+
+    private enum TypingKind { case insert, delete, ime }
+    private var typingKind: TypingKind? = nil
+    private var lastTypingTime: Double = 0
+    private var lastTypedWasWhitespace = false
+    private var lastTypingCaret = 0
+    /// Offsets of closers inserted by auto-pair that typing may over-type.
+    private var pairClosers: [(offset: Int, closer: String, opener: String)] = []
+    private var pendingModeToggle = false
+    private var pendingToggleAnchor: Int? = nil
 
     public init(text: String = "", engine: LayoutEngineKind = .lipi, theme: Theme = .paper, zoom: CGFloat = 1,
                 preset: RevealPreset = .balanced, viewportWidth: CGFloat = 800) {
@@ -73,7 +90,8 @@ public final class EditorController {
         parser.parse(buffer.rope)
         selection = SelectionModel(caret: 0)
         marked = nil
-        typingGroupOpen = false
+        typingKind = nil
+        pairClosers.removeAll()
         _ = refresh(textChanged: true, started: DispatchTime.now())
     }
 
@@ -83,7 +101,12 @@ public final class EditorController {
     }
 
     public func setTheme(_ theme: Theme, zoom: CGFloat? = nil) {
-        typesetter = Typesetter(scale: TypeScale(theme: theme, zoom: zoom ?? self.zoom), cascade: FontCascade(theme: theme))
+        rebuildTypesetter(theme: theme, zoom: zoom ?? self.zoom)
+        _ = refresh(textChanged: false, started: DispatchTime.now())
+    }
+
+    private func rebuildTypesetter(theme: Theme, zoom: CGFloat) {
+        typesetter = Typesetter(scale: TypeScale(theme: theme, zoom: zoom, monospace: mode == .source), cascade: FontCascade(theme: theme))
         renderer = Renderer(typesetter: typesetter)
         layout.setTypesetter(typesetter)
         if let textKit {
@@ -91,7 +114,50 @@ public final class EditorController {
             textKit.load(projection, typesetter: typesetter)
             textKitEntryIDs = projection.entries.map(\.id)
         }
-        _ = refresh(textChanged: false, started: DispatchTime.now())
+    }
+
+    // MARK: Source mode (§6.2)
+
+    /// Switches between hybrid and source mode. Caret, selection and undo
+    /// history carry over; the line holding `anchor` (the view passes the
+    /// top visible source offset; default the caret) keeps its screen
+    /// position through `EditorChange.viewportShift`. During IME composition
+    /// the toggle waits for the commit.
+    @discardableResult
+    public func toggleSourceMode(anchor: Int? = nil) -> EditorChange {
+        if marked != nil {
+            pendingModeToggle.toggle()
+            pendingToggleAnchor = anchor
+            return refresh(textChanged: false, started: DispatchTime.now())
+        }
+        return setMode(mode == .hybrid ? .source : .hybrid, anchor: anchor)
+    }
+
+    /// Sets the mode (see `toggleSourceMode`).
+    @discardableResult
+    public func setMode(_ newMode: EditorMode, anchor: Int? = nil) -> EditorChange {
+        let started = DispatchTime.now()
+        guard newMode != mode else { return refresh(textChanged: false, started: started) }
+        if marked != nil {
+            pendingModeToggle = true
+            pendingToggleAnchor = anchor
+            return refresh(textChanged: false, started: started)
+        }
+        let pin = max(0, min(anchor ?? selection.head, buffer.count))
+        let before = caretRect(forSource: pin)
+        mode = newMode
+        projection.sourceMode = newMode == .source
+        rebuildTypesetter(theme: theme, zoom: zoom)
+        return refresh(textChanged: false, started: started, pinned: (pin, before))
+    }
+
+    /// Applies a toggle requested while composing, once the composition ends.
+    private func applyPendingToggle(_ change: EditorChange) -> EditorChange {
+        guard pendingModeToggle, marked == nil else { return change }
+        pendingModeToggle = false
+        let anchor = pendingToggleAnchor
+        pendingToggleAnchor = nil
+        return setMode(mode == .hybrid ? .source : .hybrid, anchor: anchor)
     }
 
     // MARK: The keystroke pipeline (§7.4)
@@ -102,11 +168,16 @@ public final class EditorController {
     public func replace(_ range: Range<Int>, with text: String, caretAfter: Int? = nil) -> EditorChange {
         let started = DispatchTime.now()
         let range = clamp(range)
+        let ownGroup = !buffer.isUndoGroupOpen
+        if ownGroup { buffer.beginUndoGroup(selection: undoSelection) }
         let delta = applyEdit(range, text, caretAfter: caretAfter)
         if var m = marked {
             m.range = delta.map(SourceOffset(m.range.lowerBound), preferEnd: false).byte..<delta.map(SourceOffset(m.range.upperBound)).byte
             marked = m.range.isEmpty ? nil : m
         }
+        if ownGroup { buffer.endUndoGroup(selection: undoSelection) }
+        remapPairClosers(delta)
+        lastTypingCaret = selection.head
         stats.keystrokes += 1
         return refresh(textChanged: true, started: started)
     }
@@ -119,84 +190,325 @@ public final class EditorController {
         return delta
     }
 
-    /// Types `text` at the caret, replacing the selection (or the marked text).
+    /// Types `text` at the caret, replacing the selection (or committing the
+    /// marked text). Single characters coalesce into one undo step (see
+    /// `beginTyping`); auto-pair (§6.1.5) applies here.
     @discardableResult
     public func insert(_ text: String) -> EditorChange {
-        let target = marked?.range ?? selection.range
-        marked = nil
-        let single = text.utf8.count <= 4 && !text.contains("\n")
-        if single {
-            if !typingGroupOpen { buffer.beginUndoGroup(); typingGroupOpen = true }
-        } else {
+        if let m = marked {
+            marked = nil
+            let change = replace(m.range, with: text)
             closeTypingGroup()
+            return applyPendingToggle(change)
         }
-        return replace(target, with: text)
+        let single = text.utf8.count <= 4 && !text.contains("\n") && !text.contains("\r")
+        guard single else {
+            closeTypingGroup()
+            return replace(selection.range, with: text)
+        }
+        let caret = selection.head
+        if selection.isEmpty, let i = pairClosers.firstIndex(where: { $0.offset == caret && $0.closer == text }),
+           string(in: caret..<(caret + text.utf8.count)) == text {
+            // Over-type the closer auto-pair inserted.
+            pairClosers.remove(at: i)
+            beginTyping(.insert, text: text)
+            selection = SelectionModel(caret: caret + text.utf8.count)
+            lastTypingCaret = selection.head
+            return refresh(textChanged: false, started: DispatchTime.now())
+        }
+        if selection.isEmpty, let closer = autoPairCloser(for: text, at: caret) {
+            beginTyping(.insert, text: text)
+            let change = replace(caret..<caret, with: text + closer, caretAfter: caret + text.utf8.count)
+            pairClosers.append((caret + text.utf8.count, closer, text))
+            return change
+        }
+        beginTyping(.insert, text: text)
+        return replace(selection.range, with: text)
     }
 
+    /// Enter: list, task and quote continuation, fence, math and rule
+    /// openers (§6.1.5 smart typing), else a line terminator matching the
+    /// document's. One undo step.
     @discardableResult
     public func insertNewline() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
         closeTypingGroup()
-        return replace(selection.range, with: "\n")
+        if let plan = commands.smartNewline() { return perform(plan) }
+        let eol = CommandDocument(rope: buffer.rope, index: parser.index).eol(near: selection.range.lowerBound)
+        return replace(selection.range, with: eol)
     }
 
-    /// Deletes the selection, or the grapheme cluster before the caret.
+    /// Deletes the selection, or the grapheme cluster before the caret (both
+    /// halves of an empty auto-paired pair).
     @discardableResult
     public func deleteBackward() -> EditorChange {
-        closeTypingGroup()
-        if !selection.isEmpty { return replace(selection.range, with: "") }
+        if !selection.isEmpty { closeTypingGroup(); return replace(selection.range, with: "") }
         let caret = selection.head
         guard caret > 0 else { return refresh(textChanged: false, started: DispatchTime.now()) }
+        if let pair = pairClosers.first(where: { $0.offset == caret }), caret >= pair.opener.utf8.count,
+           string(in: (caret - pair.opener.utf8.count)..<caret) == pair.opener,
+           string(in: caret..<(caret + pair.closer.utf8.count)) == pair.closer {
+            beginTyping(.delete, text: "")
+            return replace((caret - pair.opener.utf8.count)..<(caret + pair.closer.utf8.count), with: "")
+        }
         let start = previousCaretStop(before: caret)
+        beginTyping(.delete, text: "")
         return replace(start..<caret, with: "")
     }
 
     /// Deletes the selection, or the grapheme cluster after the caret.
     @discardableResult
     public func deleteForward() -> EditorChange {
-        closeTypingGroup()
-        if !selection.isEmpty { return replace(selection.range, with: "") }
+        if !selection.isEmpty { closeTypingGroup(); return replace(selection.range, with: "") }
         let caret = selection.head
         guard caret < buffer.count else { return refresh(textChanged: false, started: DispatchTime.now()) }
         let end = nextCaretStop(after: caret)
+        beginTyping(.delete, text: "")
         return replace(caret..<end, with: "", caretAfter: caret)
     }
 
+    /// Reverts the last undo step and restores the selection from before it.
     @discardableResult
     public func undo() -> EditorChange {
-        typingGroupOpen = false
+        closeTypingGroup()
         marked = nil
+        pairClosers.removeAll()
         let started = DispatchTime.now()
-        let deltas = buffer.undo()
-        guard !deltas.isEmpty else { return refresh(textChanged: false, started: started) }
-        for delta in deltas { parser.apply(delta, then: buffer.rope) }
-        selection = SelectionModel(caret: deltas.last!.newRange.upperBound.byte)
+        let step = buffer.undoStep()
+        guard !step.deltas.isEmpty else { return refresh(textChanged: false, started: started) }
+        for delta in step.deltas { parser.apply(delta) }
+        parser.reparse(buffer.rope)
+        selection = restored(step.selection) ?? SelectionModel(caret: step.deltas.last!.newRange.upperBound.byte)
+        lastTypingCaret = selection.head
         return refresh(textChanged: true, started: started)
     }
 
+    /// Replays the last undone step and restores the selection after it.
     @discardableResult
     public func redo() -> EditorChange {
-        typingGroupOpen = false
+        closeTypingGroup()
         marked = nil
+        pairClosers.removeAll()
         let started = DispatchTime.now()
-        let deltas = buffer.redo()
-        guard !deltas.isEmpty else { return refresh(textChanged: false, started: started) }
-        for delta in deltas { parser.apply(delta, then: buffer.rope) }
-        selection = SelectionModel(caret: deltas.last!.newRange.upperBound.byte)
+        let step = buffer.redoStep()
+        guard !step.deltas.isEmpty else { return refresh(textChanged: false, started: started) }
+        for delta in step.deltas { parser.apply(delta) }
+        parser.reparse(buffer.rope)
+        selection = restored(step.selection) ?? SelectionModel(caret: step.deltas.last!.newRange.upperBound.byte)
+        lastTypingCaret = selection.head
         return refresh(textChanged: true, started: started)
+    }
+
+    private func restored(_ s: SourceBuffer.UndoSelection?) -> SelectionModel? {
+        guard let s else { return nil }
+        let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
+        return SelectionModel(anchor: clampOffset(s.anchor), head: clampOffset(s.head))
+    }
+
+    private var undoSelection: SourceBuffer.UndoSelection {
+        SourceBuffer.UndoSelection(anchor: selection.anchor, head: selection.head)
     }
 
     public var canUndo: Bool { buffer.canUndo }
     public var canRedo: Bool { buffer.canRedo }
 
+    /// Ends the open typing group (a caret jump, a command, undo).
     private func closeTypingGroup() {
-        if typingGroupOpen { buffer.endUndoGroup(); typingGroupOpen = false }
+        guard typingKind != nil else { return }
+        typingKind = nil
+        buffer.endUndoGroup(selection: undoSelection)
+    }
+
+    /// Opens or continues a typing group. A new step starts after a pause of
+    /// `coalescingInterval`, when whitespace follows a word, when the kind of
+    /// typing changes, or when the caret moved since the last keystroke.
+    private func beginTyping(_ kind: TypingKind, text: String) {
+        let now = clock()
+        let isWhitespace = !text.isEmpty && text.allSatisfy(\.isWhitespace)
+        if let current = typingKind {
+            if current != kind || now - lastTypingTime > coalescingInterval || selection.head != lastTypingCaret
+                || (kind == .insert && isWhitespace && !lastTypedWasWhitespace) {
+                closeTypingGroup()
+            }
+        }
+        if typingKind == nil {
+            if buffer.isUndoGroupOpen { buffer.endUndoGroup(selection: undoSelection) }
+            buffer.beginUndoGroup(selection: undoSelection)
+            typingKind = kind
+        }
+        lastTypingTime = now
+        lastTypedWasWhitespace = isWhitespace
+    }
+
+    // MARK: Commands (§6.1.5)
+
+    private var commands: MarkdownCommands {
+        MarkdownCommands(rope: buffer.rope, index: parser.index, selection: selection, settings: settings)
+    }
+
+    /// Applies a command's edits as one undo step that restores the
+    /// selection from before it, then sets the selection the plan names.
+    @discardableResult
+    public func perform(_ plan: EditPlan) -> EditorChange {
+        let started = DispatchTime.now()
+        if marked != nil { marked = nil }
+        closeTypingGroup()
+        pairClosers.removeAll()
+        guard !plan.edits.isEmpty else { return refresh(textChanged: false, started: started) }
+        buffer.beginUndoGroup(selection: undoSelection)
+        let ordered = plan.edits.sorted {
+            $0.range.lowerBound.byte != $1.range.lowerBound.byte ? $0.range.lowerBound.byte > $1.range.lowerBound.byte
+                : $0.range.upperBound.byte > $1.range.upperBound.byte
+        }
+        for edit in ordered { parser.apply(buffer.apply(edit)) }
+        parser.reparse(buffer.rope)
+        let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
+        selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
+        buffer.endUndoGroup(selection: undoSelection)
+        lastTypingCaret = selection.head
+        stats.keystrokes += 1
+        return refresh(textChanged: true, started: started)
+    }
+
+    private func run(_ plan: EditPlan?) -> EditorChange {
+        guard let plan else {
+            closeTypingGroup()
+            return refresh(textChanged: false, started: DispatchTime.now())
+        }
+        return perform(plan)
+    }
+
+    /// Cmd-B: wrap the selection or word in `**`, or unwrap strong text.
+    @discardableResult public func toggleStrong() -> EditorChange { run(commands.toggleInline(.strong)) }
+    /// Cmd-I: emphasis with `settings.emphasisMarker`.
+    @discardableResult public func toggleEmphasis() -> EditorChange { run(commands.toggleInline(.emphasis)) }
+    /// Cmd-Shift-X: `~~` strikethrough.
+    @discardableResult public func toggleStrikethrough() -> EditorChange { run(commands.toggleInline(.strikethrough)) }
+    /// Cmd-E: code span with the shortest backtick run absent from the text.
+    @discardableResult public func toggleCodeSpan() -> EditorChange { run(commands.toggleInline(.code)) }
+
+    /// Cmd-K: `[label](destination "title")` over the selection (label
+    /// defaults to the selected text). An empty destination leaves the caret
+    /// between the parentheses.
+    @discardableResult
+    public func insertLink(label: String? = nil, destination: String = "", title: String? = nil) -> EditorChange {
+        run(commands.link(label: label, destination: destination, title: title))
+    }
+
+    /// Cmd-Ctrl-I: `![alt](path)` over the selection.
+    @discardableResult
+    public func insertImage(alt: String? = nil, path: String) -> EditorChange {
+        run(commands.image(alt: alt, path: path))
+    }
+
+    /// Cmd-1…6 sets the heading level of every selected block; Cmd-0
+    /// (level 0) makes them paragraphs, removing heading and list markers.
+    @discardableResult public func setHeading(level: Int) -> EditorChange { run(commands.setHeading(max(0, min(level, 6)))) }
+    /// Cmd-0.
+    @discardableResult public func makeParagraph() -> EditorChange { setHeading(level: 0) }
+    /// Cmd-Ctrl-=: one heading level up (towards H1), clamped.
+    @discardableResult public func promoteHeading() -> EditorChange { run(commands.shiftHeading(by: -1)) }
+    /// Cmd-Ctrl--: one heading level down (towards H6), clamped.
+    @discardableResult public func demoteHeading() -> EditorChange { run(commands.shiftHeading(by: 1)) }
+    /// Cmd-Opt-U.
+    @discardableResult public func toggleBulletList() -> EditorChange { run(commands.toggleList(.bullet)) }
+    /// Cmd-Opt-O.
+    @discardableResult public func toggleOrderedList() -> EditorChange { run(commands.toggleList(.ordered)) }
+    /// Cmd-Opt-X.
+    @discardableResult public func toggleTaskList() -> EditorChange { run(commands.toggleList(.task)) }
+    /// Cmd-Shift-Enter: check or uncheck the selected task items.
+    @discardableResult public func toggleTaskDone() -> EditorChange { run(commands.toggleTaskDone()) }
+    /// Cmd-]: indent the selected list items (with their children).
+    @discardableResult public func indentListItem() -> EditorChange { run(commands.indentItems(1)) }
+    /// Cmd-[: outdent the selected list items.
+    @discardableResult public func outdentListItem() -> EditorChange { run(commands.indentItems(-1)) }
+    /// Cmd-Opt-Q.
+    @discardableResult public func toggleBlockQuote() -> EditorChange { run(commands.toggleQuote()) }
+    /// Cmd-Opt-C.
+    @discardableResult public func insertCodeFence() -> EditorChange { run(commands.codeFence()) }
+    /// Cmd-Opt-B.
+    @discardableResult public func insertMathBlock() -> EditorChange { run(commands.mathBlock()) }
+    /// Cmd-Opt--.
+    @discardableResult public func insertThematicBreak() -> EditorChange { run(commands.thematicBreak()) }
+    /// Cmd-Enter: leave the fence, table, quote or math block around the caret.
+    @discardableResult public func exitBlock() -> EditorChange { run(commands.exitBlock()) }
+    /// Shift-Enter: hard line break per `settings.hardBreak`.
+    @discardableResult public func insertHardBreak() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        return run(commands.hardBreak())
+    }
+
+    /// Tab: indents a list item when the caret is at its content start,
+    /// otherwise types a tab.
+    @discardableResult
+    public func insertTab() -> EditorChange {
+        if selection.isEmpty, !isAtItemStart { return insert("\t") }
+        return indentListItem()
+    }
+
+    /// Shift-Tab: outdents a list item when the caret is at its content start.
+    @discardableResult
+    public func insertBacktab() -> EditorChange {
+        if selection.isEmpty, !isAtItemStart { return refresh(textChanged: false, started: DispatchTime.now()) }
+        return outdentListItem()
+    }
+
+    private var isAtItemStart: Bool {
+        let line = CommandDocument(rope: buffer.rope, index: parser.index).prefix(ofLineAt: selection.head)
+        return line.hasMarker && selection.head >= line.markerEnd && selection.head <= line.contentStart
+    }
+
+    // MARK: Auto-pair
+
+    private static let pairs: [String: String] = ["*": "*", "_": "_", "`": "`", "[": "]", "(": ")", "$": "$", "\"": "\"", "\u{201C}": "\u{201D}"]
+
+    /// The closer to insert after `text` typed at `caret`, or nil.
+    private func autoPairCloser(for text: String, at caret: Int) -> String? {
+        guard settings.autoPair, let closer = Self.pairs[text] else { return nil }
+        let rope = buffer.rope
+        if caret < rope.count {
+            let next = rope.byte(at: caret)
+            guard next == 0x20 || next == 0x09 || next == 0x0A || next == 0x0D else { return nil }
+        }
+        let previous: UInt8? = caret > 0 ? rope.byte(at: caret - 1) : nil
+        if text == closer, let p = previous {
+            // Symmetric delimiters do not pair after a word character.
+            if p >= 0x80 || (p >= 0x30 && p <= 0x39) || (p | 0x20 >= 0x61 && p | 0x20 <= 0x7A) { return nil }
+        }
+        if text == "`", previous == 0x60 { return nil }
+        if text == "*" || text == "_" {
+            // At the start of a line's content these start list markers and rules.
+            let doc = CommandDocument(rope: rope, index: parser.index)
+            let lineStart = doc.lineStart(caret)
+            if doc.bytes(lineStart..<caret).allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x3E }) { return nil }
+        }
+        if CommandDocument(rope: rope, index: parser.index).isCodeContext(caret) { return nil }
+        return closer
+    }
+
+    private func remapPairClosers(_ delta: Delta) {
+        guard !pairClosers.isEmpty else { return }
+        let old = delta.oldRange.lowerBound.byte..<delta.oldRange.upperBound.byte
+        pairClosers = pairClosers.compactMap { entry in
+            if entry.offset > old.lowerBound, entry.offset < old.upperBound { return nil }
+            if entry.offset < old.lowerBound { return entry }
+            if entry.offset == old.lowerBound, !old.isEmpty { return nil }
+            return (entry.offset + delta.newRange.length - old.count, entry.closer, entry.opener)
+        }
     }
 
     /// Runs steps 4–8: reveal set, projection, layout update, caret rect.
-    private func refresh(textChanged: Bool, started: DispatchTime) -> EditorChange {
-        let reveal = marked?.reveal ?? policy.revealSet(caret: selection.head, index: parser.index, rope: buffer.rope)
+    private func refresh(textChanged: Bool, started: DispatchTime, pinned: (offset: Int, rect: CGRect)? = nil) -> EditorChange {
+        let reveal: RevealSet
+        if mode == .source {
+            reveal = .everything
+        } else if let m = marked {
+            reveal = m.reveal
+        } else {
+            reveal = boundaryAdjusted(policy.revealSet(caret: selection.head, index: parser.index, rope: buffer.rope), caret: selection.head)
+        }
         // Where the caret would land under the current (pre-reveal) layout.
-        let expected = textChanged ? nil : caretRect(forSource: selection.head)
+        let expected = pinned.map(\.rect) ?? (textChanged ? nil : caretRect(forSource: selection.head))
         let result = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
         let structure: Bool
         switch engine {
@@ -216,7 +528,11 @@ public final class EditorController {
         let seconds = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
         stats.lastPipelineSeconds = seconds
         var change = EditorChange(caretRect: rect, textChanged: textChanged, structureChanged: structure, seconds: seconds)
-        if let expected, !result.changedEntries.isEmpty { change.viewportShift = rect.minY - expected.minY }
+        if let pinned {
+            change.viewportShift = caretRect(forSource: pinned.offset).minY - pinned.rect.minY
+        } else if let expected, !result.changedEntries.isEmpty {
+            change.viewportShift = rect.minY - expected.minY
+        }
         onChange?(change)
         return change
     }
@@ -245,6 +561,7 @@ public final class EditorController {
     @discardableResult
     public func moveCaret(to offset: Int, extend: Bool = false, goalX: CGFloat? = nil) -> EditorChange {
         closeTypingGroup()
+        pairClosers.removeAll()
         let target = buffer.rope.floorScalarBoundary(max(0, min(offset, buffer.count)))
         if extend { selection.head = target } else { selection = SelectionModel(caret: target) }
         selection.goalX = goalX
@@ -254,6 +571,7 @@ public final class EditorController {
     @discardableResult
     public func select(_ range: Range<Int>) -> EditorChange {
         closeTypingGroup()
+        pairClosers.removeAll()
         let r = clamp(range)
         selection = SelectionModel(anchor: r.lowerBound, head: r.upperBound)
         return refresh(textChanged: false, started: DispatchTime.now())
@@ -272,9 +590,11 @@ public final class EditorController {
         switch motion {
         case .left:
             if !extend, !selection.isEmpty { return moveCaret(to: selection.range.lowerBound) }
+            if !extend, mode == .hybrid, let inside = boundaryStop(leftFrom: caret) { return moveCaret(to: inside) }
             return moveCaret(to: previousCaretStop(before: caret), extend: extend)
         case .right:
             if !extend, !selection.isEmpty { return moveCaret(to: selection.range.upperBound) }
+            if !extend, mode == .hybrid, let after = boundaryStop(rightFrom: caret) { return moveCaret(to: after) }
             return moveCaret(to: nextCaretStop(after: caret), extend: extend)
         case .wordLeft: return moveCaret(to: wordBoundary(before: caret), extend: extend)
         case .wordRight: return moveCaret(to: wordBoundary(after: caret), extend: extend)
@@ -379,7 +699,14 @@ public final class EditorController {
     /// `selected` is a UTF-16 range inside `text` for the caret.
     @discardableResult
     public func setMarkedText(_ text: String, selected: NSRange) -> EditorChange {
-        closeTypingGroup()
+        if marked == nil { closeTypingGroup() }
+        if typingKind != .ime {
+            closeTypingGroup()
+            if buffer.isUndoGroupOpen { buffer.endUndoGroup(selection: undoSelection) }
+            buffer.beginUndoGroup(selection: undoSelection)
+            typingKind = .ime
+        }
+        pairClosers.removeAll()
         let started = DispatchTime.now()
         let target = clamp(marked?.range ?? selection.range)
         let reveal = marked?.reveal ?? policy.revealSet(caret: selection.head, index: parser.index, rope: buffer.rope)
@@ -395,7 +722,10 @@ public final class EditorController {
             selection = SelectionModel(anchor: anchor, head: caret)
         }
         stats.keystrokes += 1
-        return refresh(textChanged: true, started: started)
+        lastTypingCaret = selection.head
+        if marked == nil { closeTypingGroup() }
+        let change = refresh(textChanged: true, started: started)
+        return marked == nil ? applyPendingToggle(change) : change
     }
 
     /// Commits the composition: the marked text stays as typed.
@@ -403,7 +733,76 @@ public final class EditorController {
     public func unmarkText() -> EditorChange {
         guard marked != nil else { return refresh(textChanged: false, started: DispatchTime.now()) }
         marked = nil
-        return refresh(textChanged: false, started: DispatchTime.now())
+        closeTypingGroup()
+        return applyPendingToggle(refresh(textChanged: false, started: DispatchTime.now()))
+    }
+
+    // MARK: Caret boundary rule (§6.1.4)
+
+    /// Delimited inline spans containing `p` (inclusive), with the offset
+    /// where each one's closing delimiter starts.
+    private func delimitedSpans(at p: Int) -> [(inline: Inline, closeStart: Int)] {
+        let doc = CommandDocument(rope: buffer.rope, index: parser.index)
+        guard let leaf = doc.path(at: p).last else { return [] }
+        var out: [(Inline, Int)] = []
+        func visit(_ list: [Inline]) {
+            for inline in list where inline.range.lowerBound < p && p <= inline.range.upperBound {
+                if let close = closeStart(of: inline) { out.append((inline, close)) }
+                visit(inline.children)
+            }
+        }
+        visit(leaf.inlines)
+        return out
+    }
+
+    private func closeStart(of inline: Inline) -> Int? {
+        let r = inline.range
+        switch inline.kind {
+        case .emphasis, .strong, .strikethrough:
+            return inline.children.last?.range.upperBound
+        case .code, .math:
+            let delimiter: UInt8 = { if case .code = inline.kind { return 0x60 } else { return 0x24 } }()
+            var e = r.upperBound
+            while e > r.lowerBound, buffer.rope.byte(at: e - 1) == delimiter { e -= 1 }
+            return e > r.lowerBound && e < r.upperBound ? e : nil
+        case .link(_, _, let isAutolink):
+            guard !isAutolink else { return nil }
+            return inline.children.last?.range.upperBound ?? r.lowerBound + 1
+        case .image:
+            return inline.children.last?.range.upperBound ?? r.lowerBound + 2
+        default:
+            return nil
+        }
+    }
+
+    /// A caret right after a span's closing delimiter leaves it folded.
+    private func boundaryAdjusted(_ reveal: RevealSet, caret: Int) -> RevealSet {
+        guard !reveal.inlines.isEmpty else { return reveal }
+        var reveal = reveal
+        for span in delimitedSpans(at: caret) where span.inline.range.upperBound == caret {
+            reveal.inlines.remove(span.inline.id)
+            reveal.expandedLinks.remove(span.inline.id)
+        }
+        return reveal
+    }
+
+    /// Right-arrow from just before a closing delimiter: after the delimiter
+    /// (of every span closing there).
+    private func boundaryStop(rightFrom caret: Int) -> Int? {
+        var target = caret
+        while let span = delimitedSpans(at: target).last(where: { $0.closeStart == target && $0.inline.range.upperBound > target }) {
+            target = span.inline.range.upperBound
+        }
+        return target == caret ? nil : target
+    }
+
+    /// Left-arrow from just after a span: before its closing delimiter.
+    private func boundaryStop(leftFrom caret: Int) -> Int? {
+        var target = caret
+        while let span = delimitedSpans(at: target).first(where: { $0.inline.range.upperBound == target && $0.closeStart < target }) {
+            target = span.closeStart
+        }
+        return target == caret ? nil : target
     }
 
     public var hasMarkedText: Bool { marked != nil }

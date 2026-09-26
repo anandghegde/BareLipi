@@ -21,6 +21,27 @@ public struct SourceBuffer: Sendable {
         var inverse: [Edit]
         /// The forward edits, replayed in order to redo.
         var forward: [Edit]
+        /// Selection before the step (restored by undo) and after it
+        /// (restored by redo), when the caller recorded them.
+        var before: UndoSelection? = nil
+        var after: UndoSelection? = nil
+    }
+
+    /// A selection stored with an undo step, in source bytes.
+    public struct UndoSelection: Sendable, Hashable {
+        public var anchor: Int
+        public var head: Int
+        public init(anchor: Int, head: Int) {
+            self.anchor = anchor
+            self.head = head
+        }
+    }
+
+    /// What one undo or redo did: the deltas in application order and the
+    /// selection to restore (nil when the step recorded none).
+    public struct UndoStep: Sendable {
+        public var deltas: [Delta]
+        public var selection: UndoSelection?
     }
 
     public init(_ text: String = "") {
@@ -62,15 +83,23 @@ public struct SourceBuffer: Sendable {
     }
 
     /// Starts coalescing subsequent edits into one undo step until `endUndoGroup()`.
-    public mutating func beginUndoGroup() {
-        if openGroup == nil { openGroup = UndoEntry(inverse: [], forward: []) }
+    /// `selection` is the selection before the group's first edit; undo
+    /// restores it.
+    public mutating func beginUndoGroup(selection: UndoSelection? = nil) {
+        if openGroup == nil { openGroup = UndoEntry(inverse: [], forward: [], before: selection) }
     }
 
-    public mutating func endUndoGroup() {
-        guard let group = openGroup else { return }
+    /// Closes the open group. `selection` is the selection after its last
+    /// edit; redo restores it.
+    public mutating func endUndoGroup(selection: UndoSelection? = nil) {
+        guard var group = openGroup else { return }
         openGroup = nil
+        group.after = selection ?? group.after
         if !group.forward.isEmpty { undoStack.append(group) }
     }
+
+    /// True while `beginUndoGroup` is in effect.
+    public var isUndoGroupOpen: Bool { openGroup != nil }
 
     private mutating func record(forward: Edit, inverse: Edit) {
         if openGroup != nil {
@@ -86,9 +115,13 @@ public struct SourceBuffer: Sendable {
 
     /// Reverts the most recent undo step. Returns the deltas produced.
     @discardableResult
-    public mutating func undo() -> [Delta] {
+    public mutating func undo() -> [Delta] { undoStep().deltas }
+
+    /// Reverts the most recent undo step and returns the selection it
+    /// recorded from before the step.
+    public mutating func undoStep() -> UndoStep {
         endUndoGroup()
-        guard let entry = undoStack.popLast() else { return [] }
+        guard let entry = undoStack.popLast() else { return UndoStep(deltas: [], selection: nil) }
         var deltas: [Delta] = []
         for edit in entry.inverse.reversed() {
             rope.apply(edit)
@@ -97,12 +130,16 @@ public struct SourceBuffer: Sendable {
             deltas.append(Delta(oldRange: edit.range, newRange: newRange, generation: generation))
         }
         redoStack.append(entry)
-        return deltas
+        return UndoStep(deltas: deltas, selection: entry.before)
     }
 
     @discardableResult
-    public mutating func redo() -> [Delta] {
-        guard let entry = redoStack.popLast() else { return [] }
+    public mutating func redo() -> [Delta] { redoStep().deltas }
+
+    /// Replays the most recently undone step and returns the selection it
+    /// recorded from after the step.
+    public mutating func redoStep() -> UndoStep {
+        guard let entry = redoStack.popLast() else { return UndoStep(deltas: [], selection: nil) }
         var deltas: [Delta] = []
         for edit in entry.forward {
             rope.apply(edit)
@@ -111,7 +148,7 @@ public struct SourceBuffer: Sendable {
             deltas.append(Delta(oldRange: edit.range, newRange: newRange, generation: generation))
         }
         undoStack.append(entry)
-        return deltas
+        return UndoStep(deltas: deltas, selection: entry.after)
     }
 
     /// Replaces the whole buffer (open, revert, external reload). Clears history.

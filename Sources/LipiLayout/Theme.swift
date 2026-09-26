@@ -277,12 +277,16 @@ public struct TypeScale: Sendable, Hashable {
     public let zoom: CGFloat
     /// Multiplier applied to every size in the table: bodySize / 17 × zoom.
     public let factor: CGFloat
+    /// Source mode (§6.2): every role is the monospace family at body size,
+    /// with no block spacing, padding or indent.
+    public let monospace: Bool
 
     public static let zoomSteps: [CGFloat] = (6...20).map { CGFloat($0) / 10 }
     public static let defaultZoom: CGFloat = 1
 
-    public init(theme: Theme, zoom: CGFloat = 1) {
+    public init(theme: Theme, zoom: CGFloat = 1, monospace: Bool = false) {
         self.theme = theme
+        self.monospace = monospace
         self.zoom = TypeScale.clampZoom(zoom)
         factor = theme.metrics.bodySize / 17 * self.zoom
     }
@@ -296,7 +300,7 @@ public struct TypeScale: Sendable, Hashable {
         let steps = TypeScale.zoomSteps
         let i = steps.firstIndex(of: zoom) ?? 4
         let j = min(max(i + direction, 0), steps.count - 1)
-        return TypeScale(theme: theme, zoom: steps[j])
+        return TypeScale(theme: theme, zoom: steps[j], monospace: monospace)
     }
 
     /// Scaled size rounded to half points; line heights and spacings to whole points.
@@ -312,6 +316,13 @@ public struct TypeScale: Sendable, Hashable {
     public var sideMargin: CGFloat { theme.metrics.sideMargin }
 
     public func style(for role: TextRole) -> TextStyle {
+        if monospace {
+            switch role {
+            case .statusBar: break
+            case .gutterMarker: return TextStyle(family: .mono, size: s(17), lineHeight: l(26), ink: .muted)
+            default: return TextStyle(family: .mono, size: s(17), lineHeight: l(26))
+            }
+        }
         switch role {
         case .body:
             return TextStyle(family: .body, size: s(17), lineHeight: l(26), spacingAfter: paragraphSpacing)

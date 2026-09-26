@@ -185,9 +185,76 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     // MARK: Keyboard
 
     public override func keyDown(with event: NSEvent) {
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if !controller.hasMarkedText, mods == .shift, event.keyCode == 36 || event.keyCode == 76 {
+            controller.insertHardBreak()
+            return
+        }
+        if mods.contains(.command), performEditorKeyEquivalent(event) { return }
         if inputContext?.handleEvent(event) == true { return }
         interpretKeyEvents([event])
     }
+
+    /// Handles the §6.1.5 command keys (and Cmd-/) itself, so they work
+    /// without a menu. A menu item with the same key equivalent wins when the
+    /// app has one (AppKit offers the event to the main menu first).
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
+        return performEditorKeyEquivalent(event) || super.performKeyEquivalent(with: event)
+    }
+
+    private func performEditorKeyEquivalent(_ event: NSEvent) -> Bool {
+        guard let binding = Self.binding(for: event) else { return false }
+        NSApp.sendAction(binding.action, to: self, from: self)
+        return true
+    }
+
+    /// The binding a key event triggers, if any.
+    public static func binding(for event: NSEvent) -> EditorKeyEquivalent? {
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard mods.contains(.command) else { return nil }
+        var key = (event.charactersIgnoringModifiers ?? "").lowercased()
+        if event.keyCode == 36 || event.keyCode == 76 { key = "\r" }
+        // Option can change the character on some layouts; fall back to the US key for the keyCode.
+        if mods.contains(.option), let us = usKeys[event.keyCode] { key = us }
+        return keyEquivalents.first { $0.key == key && $0.modifiers == mods }
+    }
+
+    private static let usKeys: [UInt16: String] = [
+        32: "u", 31: "o", 7: "x", 12: "q", 8: "c", 11: "b", 27: "-", 24: "=", 34: "i",
+    ]
+
+    /// Every editor command with its key equivalent (§6.1.5, §6.2), for the
+    /// app's Format menu. `action` is an `@objc` method on `EditorView`.
+    public static let keyEquivalents: [EditorKeyEquivalent] = [
+        .init("Source Mode", "/", [.command], #selector(toggleSourceMode(_:))),
+        .init("Bold", "b", [.command], #selector(toggleStrong(_:))),
+        .init("Italic", "i", [.command], #selector(toggleEmphasis(_:))),
+        .init("Strikethrough", "x", [.command, .shift], #selector(toggleStrikethrough(_:))),
+        .init("Code", "e", [.command], #selector(toggleCodeSpan(_:))),
+        .init("Link", "k", [.command], #selector(insertLink(_:))),
+        .init("Image", "i", [.command, .control], #selector(insertImage(_:))),
+        .init("Heading 1", "1", [.command], #selector(setHeading1(_:))),
+        .init("Heading 2", "2", [.command], #selector(setHeading2(_:))),
+        .init("Heading 3", "3", [.command], #selector(setHeading3(_:))),
+        .init("Heading 4", "4", [.command], #selector(setHeading4(_:))),
+        .init("Heading 5", "5", [.command], #selector(setHeading5(_:))),
+        .init("Heading 6", "6", [.command], #selector(setHeading6(_:))),
+        .init("Paragraph", "0", [.command], #selector(makeParagraph(_:))),
+        .init("Promote Heading", "=", [.command, .control], #selector(promoteHeading(_:))),
+        .init("Demote Heading", "-", [.command, .control], #selector(demoteHeading(_:))),
+        .init("Bulleted List", "u", [.command, .option], #selector(toggleBulletList(_:))),
+        .init("Numbered List", "o", [.command, .option], #selector(toggleOrderedList(_:))),
+        .init("Task List", "x", [.command, .option], #selector(toggleTaskList(_:))),
+        .init("Toggle Task Done", "\r", [.command, .shift], #selector(toggleTaskDone(_:))),
+        .init("Indent", "]", [.command], #selector(indentListItem(_:))),
+        .init("Outdent", "[", [.command], #selector(outdentListItem(_:))),
+        .init("Quote", "q", [.command, .option], #selector(toggleBlockQuote(_:))),
+        .init("Code Block", "c", [.command, .option], #selector(insertCodeFence(_:))),
+        .init("Math Block", "b", [.command, .option], #selector(insertMathBlock(_:))),
+        .init("Horizontal Rule", "-", [.command, .option], #selector(insertThematicBreak(_:))),
+        .init("Exit Block", "\r", [.command], #selector(exitBlock(_:))),
+    ]
 
     public override func doCommand(by selector: Selector) {
         switch selector {
@@ -220,9 +287,11 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(NSResponder.deleteWordBackward(_:)):
             let caret = controller.caret
             controller.replace(controller.wordBoundary(before: caret)..<caret, with: "")
-        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertLineBreak(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
             controller.insertNewline()
-        case #selector(NSResponder.insertTab(_:)): controller.insert("\t")
+        case #selector(NSResponder.insertLineBreak(_:)): controller.insertHardBreak()
+        case #selector(NSResponder.insertTab(_:)): controller.insertTab()
+        case #selector(NSResponder.insertBacktab(_:)): controller.insertBacktab()
         case #selector(NSResponder.selectAll(_:)): controller.selectAll()
         case #selector(NSResponder.pageDown(_:)), #selector(NSResponder.scrollPageDown(_:)): scrollPage(1)
         case #selector(NSResponder.pageUp(_:)), #selector(NSResponder.scrollPageUp(_:)): scrollPage(-1)
@@ -237,6 +306,53 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         clip.scroll(to: origin)
         enclosingScrollView?.reflectScrolledClipView(clip)
     }
+
+    // MARK: Commands (§6.1.5, §6.2)
+
+    /// Cmd-/: hybrid ↔ source. The top visible line stays put.
+    @objc public func toggleSourceMode(_ sender: Any?) {
+        var anchor: Int? = nil
+        if enclosingScrollView != nil {
+            anchor = controller.sourceOffset(at: CGPoint(x: controller.layout.textOrigin, y: visibleRect.minY + 1))
+        }
+        controller.toggleSourceMode(anchor: anchor)
+    }
+    @objc public func toggleStrong(_ sender: Any?) { controller.toggleStrong() }
+    @objc public func toggleEmphasis(_ sender: Any?) { controller.toggleEmphasis() }
+    @objc public func toggleStrikethrough(_ sender: Any?) { controller.toggleStrikethrough() }
+    @objc public func toggleCodeSpan(_ sender: Any?) { controller.toggleCodeSpan() }
+    /// Cmd-K quick form: `[selection]()` with the caret in the parentheses.
+    /// A popover can call `EditorController.insertLink(label:destination:title:)`.
+    @objc public func insertLink(_ sender: Any?) { controller.insertLink() }
+    /// Cmd-Ctrl-I: asks for an image file, then inserts `![selection](path)`.
+    @objc public func insertImage(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        controller.insertImage(path: url.path)
+    }
+    @objc public func setHeading1(_ sender: Any?) { controller.setHeading(level: 1) }
+    @objc public func setHeading2(_ sender: Any?) { controller.setHeading(level: 2) }
+    @objc public func setHeading3(_ sender: Any?) { controller.setHeading(level: 3) }
+    @objc public func setHeading4(_ sender: Any?) { controller.setHeading(level: 4) }
+    @objc public func setHeading5(_ sender: Any?) { controller.setHeading(level: 5) }
+    @objc public func setHeading6(_ sender: Any?) { controller.setHeading(level: 6) }
+    @objc public func makeParagraph(_ sender: Any?) { controller.makeParagraph() }
+    @objc public func promoteHeading(_ sender: Any?) { controller.promoteHeading() }
+    @objc public func demoteHeading(_ sender: Any?) { controller.demoteHeading() }
+    @objc public func toggleBulletList(_ sender: Any?) { controller.toggleBulletList() }
+    @objc public func toggleOrderedList(_ sender: Any?) { controller.toggleOrderedList() }
+    @objc public func toggleTaskList(_ sender: Any?) { controller.toggleTaskList() }
+    @objc public func toggleTaskDone(_ sender: Any?) { controller.toggleTaskDone() }
+    @objc public func indentListItem(_ sender: Any?) { controller.indentListItem() }
+    @objc public func outdentListItem(_ sender: Any?) { controller.outdentListItem() }
+    @objc public func toggleBlockQuote(_ sender: Any?) { controller.toggleBlockQuote() }
+    @objc public func insertCodeFence(_ sender: Any?) { controller.insertCodeFence() }
+    @objc public func insertMathBlock(_ sender: Any?) { controller.insertMathBlock() }
+    @objc public func insertThematicBreak(_ sender: Any?) { controller.insertThematicBreak() }
+    @objc public func exitBlock(_ sender: Any?) { controller.exitBlock() }
+    @objc public func insertHardBreak(_ sender: Any?) { controller.insertHardBreak() }
 
     @objc public func undo(_ sender: Any?) { controller.undo() }
     @objc public func redo(_ sender: Any?) { controller.redo() }
@@ -268,6 +384,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(undo(_:)): return controller.canUndo
         case #selector(redo(_:)): return controller.canRedo
         case #selector(copy(_:)), #selector(cut(_:)): return !controller.selection.isEmpty
+        case #selector(toggleSourceMode(_:)):
+            item.state = controller.mode == .source ? .on : .off
+            return true
         default: return true
         }
     }
@@ -454,5 +573,22 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         let byte = controller.byteOffset(fromUTF16: index)
         let end = controller.nextCaretStop(after: byte)
         return controller.utf16Range(fromBytes: byte..<end)
+    }
+}
+
+/// One editor command and its key equivalent, for building menus.
+@MainActor
+public struct EditorKeyEquivalent {
+    public let title: String
+    /// `NSMenuItem.keyEquivalent` (lowercase; `"\r"` for Return).
+    public let key: String
+    public let modifiers: NSEvent.ModifierFlags
+    public let action: Selector
+
+    init(_ title: String, _ key: String, _ modifiers: NSEvent.ModifierFlags, _ action: Selector) {
+        self.title = title
+        self.key = key
+        self.modifiers = modifiers
+        self.action = action
     }
 }

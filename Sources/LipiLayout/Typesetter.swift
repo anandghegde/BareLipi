@@ -112,6 +112,7 @@ public struct Typesetter {
         hasher.combine(text)
         hasher.combine(role.hashValue)
         hasher.combine(Int(scale.zoom * 100))
+        hasher.combine(scale.monospace ? 1 : 0)
         for run in runs where !run.range.isEmpty {
             hasher.combine(run.range.lowerBound); hasher.combine(run.range.upperBound); hasher.combine(Int(run.style.rawValue))
         }
@@ -159,7 +160,11 @@ public struct Typesetter {
             if s.contains(.syntax) { setColor(colors.syntax, on: result, range: range) }
             if s.contains(.html) || s.contains(.math) { setColor(colors.ink2, on: result, range: range) }
             if s.contains(.link) || s.contains(.image) { setColor(colors.accent, on: result, range: range) }
-            if s.contains(.code) { decorations.append(Decoration(range: run.range, kind: .codePill)) }
+            if s.contains(.code) {
+                // Source mode colours code instead of drawing pills.
+                if scale.monospace { if !s.contains(.syntax) { setColor(colors.ink2, on: result, range: range) } }
+                else { decorations.append(Decoration(range: run.range, kind: .codePill)) }
+            }
             if s.contains(.strikethrough) {
                 decorations.append(Decoration(range: run.range, kind: .strikethrough))
                 result.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
@@ -208,7 +213,9 @@ public struct Typesetter {
         var weight = style.weight
         var size = style.size
         let italic = inline.contains(.emphasis)
-        if inline.contains(.code) || inline.contains(.math) || inline.contains(.html) {
+        if scale.monospace {
+            family = .mono
+        } else if inline.contains(.code) || inline.contains(.math) || inline.contains(.html) {
             family = .mono
             size = (style.size * 0.9 * 2).rounded() / 2
         }

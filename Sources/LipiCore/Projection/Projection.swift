@@ -26,6 +26,8 @@ public struct ProjectedEntry: Sendable {
 
 public struct Projection: Sendable {
     public var preset: RevealPreset
+    /// Source mode (§6.2): entries are shown byte for byte (`SourceProjection.swift`).
+    public var sourceMode = false
     public private(set) var entries: [ProjectedEntry] = []
     public private(set) var reveal = RevealSet()
     /// Bytes covered; equals the document length after `update`.
@@ -67,7 +69,7 @@ public struct Projection: Sendable {
         for i in index.entries.indices {
             let entry = index.entries[i]
             let start = index.start(of: i)
-            let key = revealKey(for: entry.block.id, reveal: reveal)
+            let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1) : revealKey(for: entry.block.id, reveal: reveal)
             if !entry.isDirty, var kept = old[entry.block.id], kept.length == entry.length, kept.revealKey == key,
                kept.revision == entry.revision {
                 kept.start = start
@@ -75,7 +77,7 @@ public struct Projection: Sendable {
                 result.reused += 1
                 continue
             }
-            if !entry.isDirty, let edit = entry.tableRowEdit, let prior = old[entry.block.id],
+            if !sourceMode, !entry.isDirty, let edit = entry.tableRowEdit, let prior = old[entry.block.id],
                prior.revision == edit.baseRevision, prior.length + edit.lengthDelta == entry.length,
                var patched = patchTableRows(entry: entry, prior: prior, edit: edit, start: start, key: key,
                                             rope: rope, reveal: reveal) {
@@ -86,9 +88,10 @@ public struct Projection: Sendable {
                 result.rowPatched += 1
                 continue
             }
-            let blocks = build(entry: entry, start: start, rope: rope, reveal: reveal)
+            let blocks = sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == index.count - 1)
+                : build(entry: entry, start: start, rope: rope, reveal: reveal)
             var rows: [Int] = []
-            if Self.isCaretKey(key), case .table = entry.block.kind {
+            if !sourceMode, Self.isCaretKey(key), case .table = entry.block.kind {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
             }
             new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks,

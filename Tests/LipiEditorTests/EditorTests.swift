@@ -119,7 +119,9 @@ struct EditorControllerTests {
             seen.append(c.caret)
         }
         #expect(seen.last == c.count)
-        #expect(seen == Array(2...c.count), "\(seen)")
+        // §6.1.4: right-arrow from the last character inside the span jumps
+        // past the closing delimiter (8 → 10) and folds the span.
+        #expect(seen == [2, 3, 4, 5, 6, 7, 8, 10, 11, 12], "\(seen)")
     }
 
     @Test func markedTextFreezesTheRevealSetAndCommits() {

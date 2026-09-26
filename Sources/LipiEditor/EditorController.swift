@@ -47,6 +47,12 @@ public final class EditorController {
     public var clock: () -> Double = { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
     /// Typing coalesces into one undo step until this pause (seconds).
     public var coalescingInterval: Double = 1
+    /// False for a read-only document (locked, or not UTF-8): every edit,
+    /// undo and redo is refused up front and `onRefusedEdit` is called.
+    /// Selection, copy and navigation still work.
+    public var isEditable = true
+    /// Called when an edit is refused because the controller is not editable.
+    public var onRefusedEdit: (() -> Void)?
 
     private enum TypingKind { case insert, delete, ime }
     private var typingKind: TypingKind? = nil
@@ -82,6 +88,16 @@ public final class EditorController {
     public var caret: Int { selection.head }
     public var theme: Theme { typesetter.scale.theme }
     public var zoom: CGFloat { typesetter.scale.zoom }
+    /// The parser's block index (search in rendered text re-projects it).
+    public var blockIndex: BlockIndex { parser.index }
+
+    /// Nil when editing is allowed; otherwise a no-op change after telling
+    /// `onRefusedEdit`.
+    private func refusal() -> EditorChange? {
+        guard !isEditable else { return nil }
+        onRefusedEdit?()
+        return refresh(textChanged: false, started: DispatchTime.now())
+    }
 
     /// Replaces the whole document (open, revert). Clears the undo history.
     public func load(_ text: String) {
@@ -166,6 +182,7 @@ public final class EditorController {
     /// the replacement, or at `caretAfter`. Steps 1–8 of §7.4.
     @discardableResult
     public func replace(_ range: Range<Int>, with text: String, caretAfter: Int? = nil) -> EditorChange {
+        if let refused = refusal() { return refused }
         let started = DispatchTime.now()
         let range = clamp(range)
         let ownGroup = !buffer.isUndoGroupOpen
@@ -195,6 +212,7 @@ public final class EditorController {
     /// `beginTyping`); auto-pair (§6.1.5) applies here.
     @discardableResult
     public func insert(_ text: String) -> EditorChange {
+        if let refused = refusal() { return refused }
         if let m = marked {
             marked = nil
             let change = replace(m.range, with: text)
@@ -270,6 +288,7 @@ public final class EditorController {
     /// Reverts the last undo step and restores the selection from before it.
     @discardableResult
     public func undo() -> EditorChange {
+        if let refused = refusal() { return refused }
         closeTypingGroup()
         marked = nil
         pairClosers.removeAll()
@@ -286,6 +305,7 @@ public final class EditorController {
     /// Replays the last undone step and restores the selection after it.
     @discardableResult
     public func redo() -> EditorChange {
+        if let refused = refusal() { return refused }
         closeTypingGroup()
         marked = nil
         pairClosers.removeAll()
@@ -309,8 +329,8 @@ public final class EditorController {
         SourceBuffer.UndoSelection(anchor: selection.anchor, head: selection.head)
     }
 
-    public var canUndo: Bool { buffer.canUndo }
-    public var canRedo: Bool { buffer.canRedo }
+    public var canUndo: Bool { isEditable && buffer.canUndo }
+    public var canRedo: Bool { isEditable && buffer.canRedo }
 
     /// Ends the open typing group (a caret jump, a command, undo).
     private func closeTypingGroup() {
@@ -350,6 +370,7 @@ public final class EditorController {
     /// selection from before it, then sets the selection the plan names.
     @discardableResult
     public func perform(_ plan: EditPlan) -> EditorChange {
+        if let refused = refusal() { return refused }
         let started = DispatchTime.now()
         if marked != nil { marked = nil }
         closeTypingGroup()
@@ -699,6 +720,7 @@ public final class EditorController {
     /// `selected` is a UTF-16 range inside `text` for the caret.
     @discardableResult
     public func setMarkedText(_ text: String, selected: NSRange) -> EditorChange {
+        if let refused = refusal() { return refused }
         if marked == nil { closeTypingGroup() }
         if typingKind != .ime {
             closeTypingGroup()

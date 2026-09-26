@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+@testable import LipiApp
 
 /// A fresh directory under the system temp directory, removed by `cleanUp`.
 struct TempDirectory {
@@ -22,3 +24,14 @@ struct TempDirectory {
 }
 
 func bytes(_ string: String) -> Data { Data(string.utf8) }
+
+/// Opens `url` as a document with its window controller, as the app does.
+@MainActor
+func openDocument(_ url: URL) throws -> LipiDocument {
+    let document = LipiDocument()
+    try document.read(from: url, ofType: "net.daringfireball.markdown")
+    document.fileURL = url
+    document.fileType = "net.daringfireball.markdown"
+    document.makeWindowControllers()
+    return document
+}

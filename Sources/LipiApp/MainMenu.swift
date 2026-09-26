@@ -94,8 +94,16 @@ public enum MainMenu {
         menu.addItem(item("Copy", #selector(EditorView.copy(_:)), "c"))
         menu.addItem(item("Paste", #selector(EditorView.paste(_:)), "v"))
         menu.addItem(item("Select All", #selector(NSResponder.selectAll(_:)), "a"))
-        // Find (P0-10) arrives with the search index; formatting commands
-        // live in the Format menu.
+        menu.addItem(.separator())
+        // Find (P0-10): the window's find bar. Formatting commands live in
+        // the Format menu.
+        let find = NSMenu(title: "Find")
+        find.addItem(item("Find…", #selector(DocumentWindowController.showFind(_:)), "f"))
+        find.addItem(item("Find and Replace…", #selector(DocumentWindowController.showFindAndReplace(_:)), "f", [.command, .option]))
+        find.addItem(item("Find Next", #selector(DocumentWindowController.findNextMatch(_:)), "g"))
+        find.addItem(item("Find Previous", #selector(DocumentWindowController.findPreviousMatch(_:)), "g", [.command, .shift]))
+        find.addItem(item("Use Selection for Find", #selector(DocumentWindowController.useSelectionForFind(_:))))
+        menu.addItem(submenu(find))
         menu.addItem(.separator())
         menu.addItem(item("Emoji & Symbols", #selector(NSApplication.orderFrontCharacterPalette(_:)), "e", [.command, .control]))
         return menu

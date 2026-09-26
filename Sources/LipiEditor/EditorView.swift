@@ -22,6 +22,8 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private var mouseAnchor: Int?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
+    /// Find and Replace state; its matches are highlighted while active.
+    public var findSession: FindSession?
 
     public init(controller: EditorController, frame: NSRect = NSRect(x: 0, y: 0, width: 800, height: 600)) {
         self.controller = controller
@@ -151,6 +153,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         let colors = controller.theme.colors
         ctx.setFillColor(colors.bg.cgColor)
         ctx.fill(dirty)
+        drawFindHighlights(in: ctx, dirty: dirty)
         let selection = controller.selection
         if !selection.isEmpty {
             ctx.setFillColor(colors.selection.cgColor)

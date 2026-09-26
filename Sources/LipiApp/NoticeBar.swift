@@ -90,12 +90,22 @@ public final class NoticeBar: NSView {
     }
 }
 
-/// The window's content: notice bars stacked at the top, the editor's
-/// scroll view below them.
+/// The window's content: notice bars stacked at the top, then the find
+/// bar when it is open, the editor's scroll view below them.
 @MainActor
 public final class DocumentContentView: NSView {
     public let scrollView: NSScrollView
     public private(set) var bars: [NoticeBar] = []
+    /// A bar docked between the notice bars and the editor (the find bar);
+    /// it reports its height through `intrinsicContentSize`.
+    public var accessory: NSView? {
+        didSet {
+            if oldValue !== accessory { oldValue?.removeFromSuperview() }
+            if let accessory, accessory.superview !== self { addSubview(accessory) }
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        }
+    }
 
     public init(scrollView: NSScrollView, frame: NSRect) {
         self.scrollView = scrollView
@@ -134,6 +144,11 @@ public final class DocumentContentView: NSView {
         for bar in bars {
             bar.frame = NSRect(x: 0, y: y, width: bounds.width, height: NoticeBar.height)
             y += NoticeBar.height
+        }
+        if let accessory {
+            let height = accessory.intrinsicContentSize.height
+            accessory.frame = NSRect(x: 0, y: y, width: bounds.width, height: height)
+            y += height
         }
         let frame = NSRect(x: 0, y: y, width: bounds.width, height: max(0, bounds.height - y))
         if scrollView.frame != frame { scrollView.frame = frame }

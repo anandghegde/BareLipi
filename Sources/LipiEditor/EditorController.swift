@@ -393,7 +393,7 @@ public final class EditorController {
     public var canRedo: Bool { isEditable && buffer.canRedo }
 
     /// Ends the open typing group (a caret jump, a command, undo).
-    private func closeTypingGroup() {
+    func closeTypingGroup() {
         guard typingKind != nil else { return }
         typingKind = nil
         buffer.endUndoGroup(selection: undoSelection)

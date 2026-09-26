@@ -24,6 +24,8 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private var linkPopover: LinkPopover?
     /// The footnote popover and hover state (`FootnotePopover.swift`).
     let footnoteState = FootnoteViewState()
+    /// The emoji completion list (`EmojiCompletion.swift`).
+    let emojiState = EmojiCompletionState()
     private var hoverArea: NSTrackingArea?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
@@ -115,6 +117,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         needsDisplay = true
         postAccessibilityChange(textChanged: change.textChanged)
         if change.textChanged, footnoteState.shown != nil { closeFootnote() }
+        updateEmojiCompletion(textChanged: change.textChanged)
         if change.viewportShift != 0, let clip = enclosingScrollView?.contentView {
             var origin = clip.bounds.origin
             origin.y += change.viewportShift
@@ -167,6 +170,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public override func resignFirstResponder() -> Bool {
         caret.stop()
         inputContext?.discardMarkedText()
+        closeEmojiCompletion()
         needsDisplay = true
         return true
     }
@@ -264,6 +268,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
 
     public override func keyDown(with event: NSEvent) {
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if mods.isEmpty, !controller.hasMarkedText, handleEmojiCompletionKey(event.keyCode) { return }
         if !controller.hasMarkedText, mods == .shift, event.keyCode == 36 || event.keyCode == 76 {
             controller.insertHardBreak()
             return
@@ -532,6 +537,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        closeEmojiCompletion()
         let point = convert(event.locationInWindow, from: nil)
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.toggleTask(at: point) { return }
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), handleFootnoteClick(at: point) { return }

@@ -38,12 +38,12 @@ public struct Keymap: Equatable, Sendable {
     /// the BareLipi preset, Appendix B).
     public static let presets: [String: [String: [KeyChord]]] = [
         "BareLipi": [:],
-        // Appendix B: Quick Open moves to Cmd-Shift-O so Cmd-P is free for
-        // Print (Print itself arrives with PDF export, P0-14 Phase 2),
+        // Appendix B: Quick Open moves to Cmd-Shift-O and Print takes Cmd-P,
         // Cmd-Ctrl-1 is the outline, Cmd-Shift-` the code span, Cmd-= and
         // Cmd-- promote and demote, Cmd-Shift-= and Cmd-Shift-- zoom.
         "Typora": [
             "file.quickOpen": [KeyChord("o", [.command, .shift])],
+            "file.print": [KeyChord("p", [.command])],
             "view.outline": [KeyChord("1", [.command, .control])],
             "format.code": [KeyChord("~", [.command])],
             "format.promoteHeading": [KeyChord("=", [.command])],

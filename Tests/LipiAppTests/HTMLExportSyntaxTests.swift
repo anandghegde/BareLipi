@@ -1,8 +1,10 @@
+import AppKit
 import Foundation
 import LipiCore
 @testable import LipiExport
 import LipiLayout
 import Testing
+@testable import LipiApp
 
 @Suite("HTML export: Phase 1 syntax additions")
 struct HTMLExportSyntaxTests {
@@ -137,5 +139,41 @@ struct HTMLExportThemeModeTests {
 
     @Test func titlesAreDistinct() {
         #expect(Set(ExportThemeMode.allCases.map(\.title)).count == ExportThemeMode.allCases.count)
+    }
+}
+
+@Suite("HTML export: app wiring")
+struct HTMLExportAppWiringTests {
+    @MainActor
+    @Test func documentExportUsesTheThemeModeAndTheWindowsSyntax() async throws {
+        let dir = try TempDirectory(); defer { dir.cleanUp() }
+        let source = dir.file("Notes.md")
+        try bytes("[toc]\n\n# Water :droplet:\n\nH~2~O and ==wet==.\n").write(to: source)
+        let document = LipiDocument()
+        try document.read(from: source, ofType: "net.daringfireball.markdown")
+        document.fileURL = source
+        document.makeWindowControllers()
+        defer { document.close() }
+        let controller = document.windowController!.controller
+        controller.setTheme(.bili)
+        controller.setOptionalSyntax(subscript: true, superscript: false, highlight: true)
+        #expect(document.exportSnapshot().syntax == [.subscript, .highlight])
+        let target = dir.file("Notes.html")
+        try await document.exportHTML(to: target, theme: .lightAndDark)
+        let html = try String(contentsOf: target, encoding: .utf8)
+        #expect(html.contains("<a href=\"#water-\">Water 💧</a>"))
+        #expect(html.contains("<h1 id=\"water-\">Water 💧</h1>"))
+        #expect(html.contains("H<sub>2</sub>O and <mark>wet</mark>."))
+        #expect(html.contains("--lipi-bg: \(Theme.neeli.colors.bg.hexString);"))
+        #expect(html.contains("prefers-color-scheme: dark"))
+    }
+
+    @MainActor
+    @Test func savePanelAccessoryHasImagesAndTheme() {
+        let accessory = LipiDocument.exportAccessory()
+        #expect(accessory.images.itemTitles == ImageExport.Mode.allCases.map(\.title))
+        #expect(accessory.theme.itemTitles == ExportThemeMode.allCases.map(\.title))
+        #expect(accessory.theme.accessibilityLabel() == "Theme")
+        #expect(accessory.images.superview === accessory.view && accessory.theme.superview === accessory.view)
     }
 }

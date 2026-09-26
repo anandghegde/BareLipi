@@ -25,6 +25,7 @@ public struct AppSettings {
         public static let imageNaming = "ImageNaming"
         public static let convertHEIC = "ConvertHEICToJPEG"
         public static let exportImages = "export.html.images"
+        public static let exportTheme = "export.html.theme"
     }
 
     public let defaults: UserDefaults
@@ -130,5 +131,11 @@ public struct AppSettings {
     public var exportImages: ImageExport.Mode {
         get { defaults.string(forKey: Key.exportImages).flatMap(ImageExport.Mode.init(rawValue:)) ?? .reference }
         nonmutating set { store(newValue.rawValue, Key.exportImages) }
+    }
+
+    /// Whether HTML export uses the window's theme or a light / dark pair.
+    public var exportTheme: ExportThemeMode {
+        get { defaults.string(forKey: Key.exportTheme).flatMap(ExportThemeMode.init(rawValue:)) ?? .window }
+        nonmutating set { store(newValue.rawValue, Key.exportTheme) }
     }
 }

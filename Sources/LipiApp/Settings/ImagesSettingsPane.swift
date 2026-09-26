@@ -2,7 +2,8 @@ import AppKit
 import LipiExport
 
 /// Settings → Images (§6.6): how pasted and dropped images are named, the
-/// HEIC conversion, and what HTML export does with local images.
+/// HEIC conversion, and what HTML export does with local images and
+/// which theme it uses.
 @MainActor
 public final class ImagesSettingsPane: SettingsFormPane {
     public override func buildRows() {
@@ -14,5 +15,7 @@ public final class ImagesSettingsPane: SettingsFormPane {
         note("Images go to the front matter's assets folder, or ./assets beside the document.")
         popup("HTML export:", ImageExport.Mode.allCases.map { ($0.title, $0) },
               get: s.exportImages) { s.exportImages = $0 }
+        popup("Export theme:", ExportThemeMode.allCases.map { ($0.title, $0) },
+              get: s.exportTheme) { s.exportTheme = $0 }
     }
 }

@@ -204,7 +204,7 @@ enum FontServer {
 
 /// Which families are installed, resolved once per process.
 public enum InstalledFonts {
-    nonisolated(unsafe) private static let families: Set<String> = FontServer.sync {
+    private static let families: Set<String> = FontServer.sync {
         let names = CTFontManagerCopyAvailableFontFamilyNames() as? [String] ?? []
         return Set(names.map { $0.lowercased() })
     }

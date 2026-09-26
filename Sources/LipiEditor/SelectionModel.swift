@@ -48,4 +48,9 @@ public struct EditorChange: Sendable {
     public var structureChanged: Bool
     /// Seconds spent in the pipeline (buffer → caret rect).
     public var seconds: Double
+    /// Reveal/fold layout compensation (PRD §9.1): how far the caret's line
+    /// moved in document space because syntax revealed or folded around a
+    /// caret move. The view scrolls by this so the caret's screen y is
+    /// unchanged. Zero for text edits.
+    public var viewportShift: CGFloat = 0
 }

@@ -13,19 +13,33 @@ The product requirements document lives in the Claude Doc "BareLipi PRD — Nati
 | `Sources/LipiCore/Parser` | `LipiParser` (value AST with byte ranges), `BlockIndex` incremental re-parse, front matter, cmark bridge |
 | `Sources/LipiCore/Projection` | `Projection`: source → display blocks with `OffsetMap`s, `RevealPolicy` (PRD §6.1) |
 | `Sources/CCmarkGFM` | Vendored cmark-gfm 0.29.0.gfm.13 with source-position patches and a math extension (`PATCHES.md`) |
-| `Sources/BareLipi` | Placeholder AppKit shell (SwiftPM executable) |
-| `Sources/lipi-bench` | Release-mode micro-benchmarks for the core |
+| `Sources/LipiLayout` | ADR-002 block layout engine: `Typesetter` (Core Text, font cascade, themes), `BlockLayout` / `CellLayout` per block, `DocumentLayout` (lazy layout, `HeightTree`, `LayoutCache`), `CaretGeometry`, `Renderer`; `TextKit2Layout` is the headless TextKit 2 comparison used by the spike |
+| `Sources/LipiEditor` | `EditorController` (PRD §7.4 keystroke pipeline over either engine) and `EditorView`, one layer-backed `NSView` with `NSTextInputClient` and the accessibility text protocol |
+| `Sources/LipiFixtures` | Generators for the §9.1 fixture set (`lorem-50k`, `kannada-20k`, `tables-600x6`, `10mb`, `reveal-matrix`, …) and pathological inputs, deterministic from a seed |
+| `Sources/BareLipi` | AppKit shell (SwiftPM executable): one window, one `EditorView`, plus the `--measure` driver |
+| `Sources/lipi-bench` | Release-mode micro-benchmarks for the core and the layout spike |
+| `Sources/lipi-fixtures` | Writes the fixture set to `Fixtures/perf` as `.md` files |
 | `Tests/LipiCoreTests` | swift-testing suites, including property tests against a `String` model and the parser range invariants |
 | `Tests/LipiCoreTests/Fixtures` | CommonMark 0.31.2 and GFM 0.29 spec files plus the GFM extension and regression suites |
+| `Tests/LipiLayoutTests` | Typesetter, block and document layout, tables, fonts, themes, and TextKit 2 comparison suites |
+| `Tests/LipiEditorTests` | Controller and view tests: clusters, IME, motion, selection, accessibility, pixel checks |
+| `Tests/LipiPerfTests` | XCTest performance harness for the §9.1 rows with committed baselines |
 | `project.yml` | xcodegen spec for the application bundle (`xcodegen generate`) |
 
 ## Build and test
 
 ```sh
 swift build
-swift test
-swift run -c release lipi-bench
-swift run BareLipi            # placeholder window
+swift test                                   # unit suites; perf rows print but do not gate
+swift run -c release lipi-bench              # core and layout-spike micro-benchmarks
+swift run -c release lipi-fixtures           # writes Fixtures/perf/*.md (ignored by git)
+swift run -c release BareLipi                # the editor with a welcome document
+swift run -c release BareLipi path/to/doc.md
+swift run -c release BareLipi --fixture lorem-50k --engine textkit2 --theme ink --zoom 1.2
+swift run -c release BareLipi --fixture kannada-20k --measure 10   # types, scrolls, prints frame stats, quits
+swift test -c release --filter LipiPerfTests                        # §9.1 harness, comparable numbers
+LIPI_PERF_GATE=1 swift test -c release --filter LipiPerfTests       # fail over budget or >10 % above baseline
+LIPI_PERF_RECORD=1 swift test -c release --filter LipiPerfTests     # rewrite Tests/LipiPerfTests/Baselines/m4.json
 xcodegen generate && open BareLipi.xcodeproj
 ```
 
@@ -73,8 +87,49 @@ Requires Xcode 26 / Swift 6.3 and macOS 15 or later at runtime.
   | Caret move: reveal set + projection update | 80 µs |
   | Typing: re-parse + reveal + projection update | 145 µs |
   | Source ↔ display position lookup | 0.5 µs |
-- [ ] Layout spike: `LipiLayout` versus headless TextKit 2 (ADR-002 go/no-go)
-- [ ] Performance harness and fixtures (PRD §9.1)
+- [x] Layout spike: `LipiLayout` versus headless TextKit 2 — **ADR-002 go**. `LipiLayout` typesets each display cell with `CTTypesetter`, keeps a `HeightTree` of estimated-then-measured entry heights, caches typeset blocks by content key, and lays out only the viewport plus one screen of overscan; the font cascade (serif / sans / mono roles, per-script fallbacks, Kannada and Devanagari raised to the tall line-height class) and the four themes live beside it. `TextKit2Layout` runs the same projection through `NSTextLayoutManager` for the comparison. Both engines drive the same `EditorController`, so the go/no-go criteria were checked on both (`lipi-bench`, release, Apple M4, viewport 1000 × 800 @2×; the PRD budgets are M1 figures):
+
+  | Fixture | Measure | `LipiLayout` | TextKit 2 |
+  | --- | --- | --- | --- |
+  | lorem-50k | first screen: layout + cold draw | 2.4 + 1.7 ms | 21.5 + 0.9 ms (after an 18.3 ms load) |
+  | lorem-50k | keystroke → caret rect / → screen drawn | 0.21 / 0.50 ms | 2.50 / 3.56 ms |
+  | lorem-50k | caret rect / hit test, random offset | 7.7 / 1.8 µs | 13.4 / 83.8 µs |
+  | lorem-50k | full layout, resident added | 60 ms, +33.8 MB | 94 ms, +26.3 MB |
+  | kannada-20k | keystroke → caret rect / → screen drawn | 0.53 / 1.25 ms | 1.15 / 3.99 ms |
+  | kannada-20k | full layout | 110 ms | 124 ms |
+  | tables-600x6 | keystroke → caret rect / → screen drawn | 3.83 / 4.14 ms | 25.2 / 27.2 ms (no table layout: cells as text) |
+
+  Criteria: keystroke → screen for lorem-50k is 0.5 ms on M4 against the 8 ms 120 fps frame and the 3 ms §7.5 budget, with ~6× headroom for an M1; Kannada and Devanagari shape through the cascade with correct cluster caret stops and deletion (`kannadaClusterDeletionAndMotion`, `devanagariAndEmojiClusters`); IME marked text freezes the reveal set and commits in place (`markedTextRoundTrip`); VoiceOver reads the document through the accessibility text protocol (`accessibilityDescribesTheDocument`); the 600 × 6 table is a real grid island (`TableLayoutTests`) that TextKit 2 cannot lay out at all. The table keystroke is dominated by `LipiCore`, not layout: the whole table re-parses (2.1 ms) and re-projects (1.3 ms) per edit, which is a Phase 1 item (per-row table re-parse). Two findings worth keeping: `fontd` can deadlock when Core Text is first exercised from several threads at once, so `FontCascade` serialises font resolution behind a process-wide lock; and this machine's 4K display refreshes at 60 Hz, so 120 Hz criteria are stated as per-frame budgets (≤ 8.33 ms) rather than observed frame rates.
+- [x] Performance harness and fixtures (PRD §9.1): `LipiFixtures` generates the fixture set deterministically (`lipi-fixtures` writes it out); `Tests/LipiPerfTests` measures every §9.1 row that exists in Phase 0 headless (an `EditorController` drawing into a 1200 × 800 @2× bitmap) and skips the rest with the reason (`XCTSkip`: pre-main, launch, keystroke → photon, math, diagrams, find, PDF, idle CPU, bundle size, baseline memory). Rows print on every run; `LIPI_PERF_GATE=1` fails a release run that is over budget or more than 10 % above `Baselines/m4.json`, `LIPI_PERF_RECORD=1` rewrites that file. Launch and frame-rate rows come from the app itself: `BareLipi --measure <s>` types and scrolls under a display link and prints process start → main, main → first frame (`launch.firstFrame` signpost), keystroke → draw work and latency, frame intervals and footprint. Building the harness fixed three things: `LayoutCache` is now bounded by lines held and keeps at most two layouts per node (typing in the 600 × 6 table used to retain one table layout per keystroke); `DocumentLayout` drops the cached layouts of node ids that a re-parse retired, since every keystroke gives the edited block fresh ids (1,000 keystrokes in a Kannada paragraph used to leave 495 stale layouts, 126 MB, in the cache; now 45 blocks); and the controller marks the caret's table grow-only so its columns never shrink mid-word. Reveal/fold compensation is the controller's `viewportShift`: the caret's line moves by up to 42 pt in document space when a fence or heading marker reveals, and the view scrolls by exactly that, so the caret's screen y is unchanged to within the clip view's pixel alignment.
+
+  | §9.1 row | Budget (M1) | Fixture | Measured (M4) |
+  | --- | --- | --- | --- |
+  | Open 50k words → first frame | ≤ 60 ms | lorem-50k | 10.60 ms, +14.7 MB |
+  | Open 1 MB → first frame | ≤ 80 ms | words-170k | 29.81 ms, +15.1 MB |
+  | Open 20k Kannada words → first frame | ≤ 60 ms | kannada-20k | 10.37 ms |
+  | Keystroke → draw, 1,000 keystrokes, p50 / p99 | ≤ 3 / 6 ms | lorem-50k | 1.11 / 1.25 ms |
+  |  |  | kannada-20k | 1.76 / 2.20 ms |
+  |  |  | mixed-scripts | 1.67 / 1.90 ms |
+  | Typing at 120 Hz: work per frame p99, frames over 8.33 ms | ≤ 8.33 ms, 0 dropped | lorem-50k / kannada-20k / mixed-scripts | 1.16 / 1.99 / 2.17 ms, 0 dropped |
+  | Scroll, one fresh screen (layout + draw), p50 / p99 | ≤ 8.33 ms | lorem-50k | 1.05 / 2.90 ms (warm draw only: 2.22 ms p99) |
+  |  |  | images-200 | 0.87 / 1.19 ms |
+  | Hybrid 3 MB: open / keystroke p99 / scroll p99 | 120 fps (≤ 8.33 ms) | words-500k | 83 ms / 3.40 ms / 1.68 ms |
+  | Hybrid 10 MB: open / keystroke p99 / scroll p99 | 60 fps (≤ 16.7 ms) | 10mb | 252 ms (+119 MB) / 10.90 ms / 1.76 ms |
+  | Reveal / fold caret y drift | ≤ 0.5 pt, every frame | reveal-matrix | 0.00 pt over 2,730 caret moves and 14 block kinds (largest line move compensated: 42 pt) |
+  | Table 600 × 6 typing: p50 / p99, memory added | 120 fps, ≤ 20 MB | tables-600x6 | 4.42 / 5.51 ms, +0.02 MB |
+  | Table 10k × 10 open | ≤ 500 ms | tables-10kx10 | **653 ms, +397 MB: over budget** |
+
+  | §9.1 row | Budget (M1) | Measured (M4) |
+  | --- | --- | --- |
+  | Pre-main | ≤ 40 ms | 12–30 ms (the first launch of a freshly built binary pays ~550 ms in Gatekeeper's scan; excluded) |
+  | Process start → first frame | ≤ 50 ms | **161–172 ms: over budget.** main → first frame is 140–152 ms = NSApplication launch and menus 68–94 ms + parse, fonts and first layout 10–22 ms + window and scroll view 30–47 ms + first draw 13–21 ms |
+  | Keystroke → draw work, p50 / p99 | ≤ 3 / 6 ms | 0.5–0.6 / 0.9–2.3 ms Latin, 1.6–1.9 / 4.0–4.8 ms Kannada |
+  | Frames over 1.5 × the 16.67 ms display interval while typing / scrolling (6 s each) | 0 | 0–1 / 0 in most runs (one 28 ms hitch while typing); one run had 4 while the machine was under build load |
+  | Baseline memory, welcome document, idle | ≤ 80 MB | **136–157 MB: over budget.** `footprint`: 77 MB IOSurface + 51 MB graphics backing, 13 MB malloc; see below |
+
+  Headless rows come from `swift test -c release --filter LipiPerfTests` (Apple M4, release; the budgets are the PRD's M1 figures, so an M4 should sit well inside them). App rows come from `BareLipi <fixture> --measure 6` on the second launch of the binary, with the display awake (a sleeping display stops the display link; the driver now finishes on a wall-clock deadline and says so). This machine's 4K display refreshes at 60 Hz, so the 120 fps rows are stated as per-frame budgets and the app's keystroke → drawn latency (2.7–15.8 ms p50 across runs) is the wait for the next 16.67 ms display cycle, set by where the 60 Hz keystroke timer lands, not by the editor: the work figure is the editor's. Memory deltas are process-level and noisy; the harness now prints the layout cache's size beside them, and what remains after the cache fix is Core Text's per-font shaping and glyph caches, which grow with unique text for the first tens of MB in a process (41–63 MB for Kannada, 36 MB for mixed scripts, 2.5 MB for Latin in an isolated run) before they saturate.
+
+  Over budget, carried into Phase 1: the 10k × 10 table (the whole table is laid out at open; row-lazy table layout takes it to the same cost as any other block), launch (the SwiftPM executable's `NSApplication` bring-up and menu setup is 68–94 ms of it and window creation 30–47 ms; an app bundle with a precompiled main menu and a deferred window are the first things to try, with the editor's own share at 10–22 ms) and baseline memory (128 MB of the 157 MB footprint is layer backing on the 4K EDR display in 16-bit float, 8 bytes per pixel; 8-bit layer contents on the editor and scroll layers should halve it, and the malloc heap the editor actually owns is 13 MB).
 
 ## Licence
 

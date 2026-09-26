@@ -195,11 +195,19 @@ public final class EditorController {
     /// Runs steps 4–8: reveal set, projection, layout update, caret rect.
     private func refresh(textChanged: Bool, started: DispatchTime) -> EditorChange {
         let reveal = marked?.reveal ?? policy.revealSet(caret: selection.head, index: parser.index, rope: buffer.rope)
+        // Where the caret would land under the current (pre-reveal) layout.
+        let expected = textChanged ? nil : caretRect(forSource: selection.head)
         let result = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
         let structure: Bool
         switch engine {
         case .lipi:
             structure = projection.entries.count != layout.entryCount
+            // Columns of the table being typed in never shrink (§6.1.4).
+            if let p = projection.position(forSource: selection.head), projection.entries[p.entry].blocks[p.block].table != nil {
+                layout.growOnlyEntry = p.entry
+            } else {
+                layout.growOnlyEntry = nil
+            }
             layout.update(projection: projection, result: result)
         case .textkit2:
             structure = updateTextKit(result)
@@ -207,7 +215,8 @@ public final class EditorController {
         let rect = caretRect(forSource: selection.head)
         let seconds = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
         stats.lastPipelineSeconds = seconds
-        let change = EditorChange(caretRect: rect, textChanged: textChanged, structureChanged: structure, seconds: seconds)
+        var change = EditorChange(caretRect: rect, textChanged: textChanged, structureChanged: structure, seconds: seconds)
+        if let expected, !result.changedEntries.isEmpty { change.viewportShift = rect.minY - expected.minY }
         onChange?(change)
         return change
     }
@@ -514,6 +523,12 @@ public final class EditorController {
 
     public func displayCell(at p: DisplayPosition) -> DisplayCell {
         projection.entries[p.entry].blocks[p.block].cells[p.cell]
+    }
+
+    /// The display block holding a source offset, if any.
+    public func displayBlock(atSource offset: Int) -> DisplayBlock? {
+        guard let p = projection.position(forSource: offset) else { return nil }
+        return projection.entries[p.entry].blocks[p.block]
     }
 
     // MARK: Unit conversion (NSTextInputClient and accessibility speak UTF-16)

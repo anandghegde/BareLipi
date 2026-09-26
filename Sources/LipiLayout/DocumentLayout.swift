@@ -132,6 +132,16 @@ public final class DocumentLayout {
         newLayouts.reserveCapacity(new.entries.count)
         heights.reserveCapacity(new.entries.count)
         stale.removeAll()
+        // Re-parsed blocks come back with fresh node ids, so the cached
+        // layouts of ids that vanished can never hit again. Drop them now;
+        // otherwise a paragraph typed into for a while leaves one stale
+        // layout per keystroke in the cache until the LRU bound evicts it.
+        var newIDs = Set<NodeID>(minimumCapacity: new.entries.count)
+        for entry in new.entries { newIDs.insert(entry.id) }
+        for (j, entry) in old.entries.enumerated() where !newIDs.contains(entry.id) {
+            guard let layout = layouts[j] else { continue }
+            for block in layout.blocks { cache.invalidate(block.id) }
+        }
         for (i, entry) in new.entries.enumerated() {
             if !changed.contains(i), let j = oldByID[entry.id] {
                 newLayouts.append(layouts[j])

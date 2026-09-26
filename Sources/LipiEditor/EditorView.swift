@@ -10,12 +10,15 @@ import os
 public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public let controller: EditorController
     private let caret = CaretController()
-    /// Seconds from each edit to the end of the draw that showed it.
+    /// Seconds from each edit to the end of the draw that showed it, wall
+    /// clock: includes the wait for the next display cycle.
     public private(set) var keystrokeToDraw: [Double] = []
+    /// Main-thread work per edit: the pipeline plus the draw that showed it.
+    public private(set) var keystrokeWork: [Double] = []
     /// Called once, after the first draw.
     public var onFirstDraw: (() -> Void)?
     private var hasDrawn = false
-    private var pendingKeystroke: (start: DispatchTime, signpost: OSSignpostIntervalState)?
+    private var pendingKeystroke: (start: DispatchTime, pipeline: Double, signpost: OSSignpostIntervalState)?
     private var mouseAnchor: Int?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
@@ -45,11 +48,17 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func didChange(_ change: EditorChange) {
         if change.textChanged, pendingKeystroke == nil {
-            pendingKeystroke = (DispatchTime.now(), Signposts.editor.beginInterval("key.toDraw"))
+            pendingKeystroke = (DispatchTime.now(), change.seconds, Signposts.editor.beginInterval("key.toDraw"))
         }
         caret.restart()
         syncFrameHeight()
         needsDisplay = true
+        if change.viewportShift != 0, let clip = enclosingScrollView?.contentView {
+            var origin = clip.bounds.origin
+            origin.y += change.viewportShift
+            clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+            enclosingScrollView?.reflectScrolledClipView(clip)
+        }
         scrollCaretToVisible(change.caretRect)
     }
 
@@ -121,10 +130,13 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
 
     public override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let drawStarted = DispatchTime.now()
         render(in: ctx, dirty: dirtyRect)
         if let pending = pendingKeystroke {
             pendingKeystroke = nil
-            keystrokeToDraw.append(Double(DispatchTime.now().uptimeNanoseconds - pending.start.uptimeNanoseconds) / 1e9)
+            let now = DispatchTime.now()
+            keystrokeToDraw.append(Double(now.uptimeNanoseconds - pending.start.uptimeNanoseconds) / 1e9)
+            keystrokeWork.append(pending.pipeline + Double(now.uptimeNanoseconds - drawStarted.uptimeNanoseconds) / 1e9)
             Signposts.editor.endInterval("key.toDraw", pending.signpost)
         }
         if !hasDrawn {

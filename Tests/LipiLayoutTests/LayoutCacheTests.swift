@@ -5,8 +5,11 @@ import Testing
 
 @Suite("Layout cache")
 struct LayoutCacheTests {
+    /// One document of 100 paragraphs so every layout has its own node id.
+    static let doc = Doc((0..<100).map { "paragraph \($0)" }.joined(separator: "\n\n"))
+
     func layout(_ i: Int) -> BlockLayout {
-        layoutBlock("paragraph \(i)")
+        LayoutEngine.layout(Self.doc.block(i), typesetter: makeTypesetter(), measure: 480, wideWidth: 480)
     }
 
     @Test func keysQuantiseWidthToQuarterPoints() {
@@ -34,6 +37,29 @@ struct LayoutCacheTests {
         cache.insert(first, for: key)
         cache.removeAll()
         #expect(cache.count == 0)
+    }
+
+    @Test func keepsAtMostTwoVersionsPerNode() {
+        let cache = LayoutCache(capacity: 64)
+        let l = layout(1)
+        let keys = (0..<5).map { LayoutKey(layoutKey: UInt64($0), width: 480, themeRevision: 0) }
+        for key in keys { cache.insert(l, for: key) }
+        #expect(cache.count == 2)
+        #expect(cache.layout(for: keys[3]) === l && cache.layout(for: keys[4]) === l)
+        #expect(cache.layout(for: keys[2]) == nil)
+        #expect(cache.previousLayout(of: l.id) === l)
+        cache.invalidate(l.id)
+        #expect(cache.count == 0 && cache.weight == 0)
+    }
+
+    @Test func boundsTheNumberOfLinesHeld() {
+        let cache = LayoutCache(capacity: 1000, weightCapacity: 40)
+        for i in 0..<60 {
+            let l = layout(i)
+            cache.insert(l, for: LayoutKey(layoutKey: UInt64(i), width: 480, themeRevision: 0))
+            #expect(cache.weight <= 40)
+        }
+        #expect(cache.count < 60)
     }
 
     @Test func evictsLeastRecentlyUsed() {

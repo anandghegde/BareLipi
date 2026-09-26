@@ -171,6 +171,26 @@ struct DocumentLayoutTests {
         #expect(relaid.blocks[0].cells[0].string.contains("more words here"))
     }
 
+    @Test func typingDoesNotAccumulateStaleLayoutsInTheCache() {
+        var doc = Doc(text)
+        let layout = makeLayout(doc, width: 900)
+        let quote = doc.projection.entries[2]
+        var caret = quote.start + quote.length - 1
+        layout.update(projection: doc.projection, result: doc.move(to: caret))
+        layout.layoutAll()
+        let resting = layout.cache.count
+        // Every keystroke re-parses the quote, which comes back with fresh
+        // node ids; the layouts of the ids that vanished must go with them.
+        for _ in 0..<40 {
+            let result = doc.insert("x", at: caret)
+            caret += 1
+            layout.update(projection: doc.projection, result: result)
+            layout.layoutAll()
+            #expect(layout.cache.count <= resting + 1)
+        }
+        #expect(layout.ensureLayout(2).blocks[0].cells[0].string.contains(String(repeating: "x", count: 40)))
+    }
+
     @Test func caretMoveRevealsWithoutRelayingOutOtherEntries() {
         var doc = Doc(text)
         let layout = makeLayout(doc, width: 900)

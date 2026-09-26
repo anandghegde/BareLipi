@@ -23,6 +23,20 @@ public struct HTMLExporter: Sendable {
 
     /// The complete document.
     public func document(markdown: String, title: String) -> String {
+        page(body: body(markdown: markdown), title: title)
+    }
+
+    /// The complete document with its images treated per `images`, and
+    /// what the caller must copy beside it.
+    public func export(markdown: String, title: String, images: ImageExport?) -> HTMLExportResult {
+        let body = body(markdown: markdown)
+        guard let images else { return HTMLExportResult(html: page(body: body, title: title), copies: [], missingImages: []) }
+        var result = HTMLExporter.rewriteImages(in: body, options: images)
+        result.html = page(body: result.html, title: title)
+        return result
+    }
+
+    func page(body: String, title: String) -> String {
         """
         <!doctype html>
         <html>
@@ -37,7 +51,7 @@ public struct HTMLExporter: Sendable {
         </head>
         <body>
         <main class="lipi-document">
-        \(body(markdown: markdown))</main>
+        \(body)</main>
         </body>
         </html>
 
@@ -51,9 +65,41 @@ public struct HTMLExporter: Sendable {
 
     /// The rendered body: cmark-gfm HTML with fenced code highlighted.
     public func body(markdown: String) -> String {
-        let html = LipiParser.renderHTML(markdown, options: HTMLExporter.parserOptions)
+        let html = HTMLExporter.convertMath(in: LipiParser.renderHTML(markdown, options: HTMLExporter.parserOptions))
         guard let highlighter else { return html }
         return HTMLExporter.highlightCodeBlocks(in: html, highlighter: highlighter)
+    }
+
+    /// Replaces cmark's `<span class="math inline">\(…\)</span>` (and
+    /// `display` with `\[…\]`) with MathML carrying the TeX in `data-tex`
+    /// and an `<annotation>`; no scripts (§6.4 Export).
+    static func convertMath(in html: String) -> String {
+        let prefix = #"<span class="math "#
+        guard html.contains(prefix) else { return html }
+        let forms: [(open: String, close: String, display: Bool)] = [
+            (#"<span class="math inline">\("#, #"\)</span>"#, false),
+            (#"<span class="math display">\["#, #"\]</span>"#, true),
+        ]
+        var out = ""
+        out.reserveCapacity(html.utf8.count * 2)
+        var rest = html[...]
+        while let start = rest.range(of: prefix) {
+            let tail = rest[start.lowerBound...]
+            guard let form = forms.first(where: { tail.hasPrefix($0.open) }),
+                  let close = tail.range(of: form.close) else {
+                out += rest[..<start.upperBound]
+                rest = rest[start.upperBound...]
+                continue
+            }
+            out += rest[..<start.lowerBound]
+            let escaped = tail[tail.index(tail.startIndex, offsetBy: form.open.count)..<close.lowerBound]
+            let tex = HTMLEscaping.unescape(String(escaped))
+            let kind = form.display ? "display" : "inline"
+            out += "<span class=\"math \(kind)\" data-tex=\"\(escaped)\">\(TeXToMathML.math(tex, display: form.display))</span>"
+            rest = rest[close.upperBound...]
+        }
+        out += rest
+        return out
     }
 
     /// Rewrites each `<pre><code class="language-x">…</code></pre>` whose

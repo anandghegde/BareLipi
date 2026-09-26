@@ -54,7 +54,7 @@ struct HTMLExportTests {
         #expect(body.contains("<table>"))
         #expect(body.contains("checked"))
         #expect(body.contains("class=\"footnotes\""))
-        #expect(body.contains("<span class=\"math inline\">"))
+        #expect(body.contains("<span class=\"math inline\" data-tex=\"x^2\"><math"))
     }
 
     @Test func fencedCodeIsHighlightedAndEscaped() {

@@ -154,6 +154,52 @@ final class PerfTests: XCTestCase {
         measureScroll(.tenMB, key: "scroll.10mb", frameBudget: Self.frame60, maxSteps: 200)
     }
 
+    // MARK: Find (P0-10)
+
+    /// Find over the 10 MB fixture. The PRD budget is 2 s per GB, so 20 ms
+    /// here, for the default search (literal, case-insensitive) including
+    /// the flat copy of the rope it scans; median of 5 runs, each with a
+    /// fresh session so nothing is cached. Regex and replace-all rows are
+    /// reported against their baselines only.
+    func testFind() throws {
+        if !Perf.isRelease { throw XCTSkip("10 MB fixture runs in release only (swift test -c release)") }
+        let controller = EditorController(text: PerfFixture.tenMB.text())
+        let mb = Double(controller.count) / 1_048_576
+        func median(_ runs: Int = 5, _ body: () -> Void) -> Double {
+            (0..<runs).map { _ in seconds(body) * 1000 }.sorted()[runs / 2]
+        }
+        var count = 0
+        let literal = median {
+            let session = FindSession(controller: controller)
+            session.query = FindQuery("dolor")
+            count = session.count
+        }
+        XCTAssertGreaterThan(count, 1000)
+        Perf.report("find.10mb", literal, unit: "ms", budget: 20,
+                    note: "\"dolor\", \(count) matches, \(String(format: "%.1f", mb)) MB")
+        var misses = -1
+        let miss = median {
+            let session = FindSession(controller: controller)
+            session.query = FindQuery("zqxj", caseSensitive: true)
+            misses = session.count
+        }
+        XCTAssertEqual(misses, 0)
+        Perf.report("find.10mb.no-match", miss, unit: "ms", budget: 20, note: "case-sensitive, 0 matches")
+        var words = 0
+        let regex = median(3) {
+            let session = FindSession(controller: controller)
+            session.query = FindQuery(#"\bdol\w+"#, isRegex: true)
+            words = session.count
+        }
+        Perf.report("find.10mb.regex", regex, unit: "ms", budget: nil, note: "\\bdol\\w+, \(words) matches")
+        let session = FindSession(controller: controller)
+        session.query = FindQuery("dolor", caseSensitive: true)
+        var replaced = 0
+        let replaceAll = seconds { replaced = session.replaceAll(with: "DOLOR") } * 1000
+        XCTAssertGreaterThan(replaced, 1000)
+        Perf.report("find.10mb.replace-all", replaceAll, unit: "ms", budget: nil, note: "\(replaced) edits, one undo step")
+    }
+
     // MARK: Reveal / fold compensation
 
     /// Walks the reveal matrix with up to 100 caret positions per block and
@@ -217,7 +263,6 @@ final class PerfTests: XCTestCase {
     func testKeystrokeToPhoton() throws { throw XCTSkip("keystroke → photon needs Typometer on a real display") }
     func testMathRendering() throws { throw XCTSkip("math ≤ 1 ms/formula: renderer is Phase 2") }
     func testDiagramRendering() throws { throw XCTSkip("diagram ≤ 300 ms: Mermaid island is Phase 2") }
-    func testFind() throws { throw XCTSkip("find ≤ 2 s / 1 GB: search index is Phase 1") }
     func testPDFExport() throws { throw XCTSkip("PDF export ≤ 5 s: Phase 2") }
     func testIdleCPU() throws { throw XCTSkip("idle CPU: app-process figure, Phase 1") }
     func testBundleSize() throws { throw XCTSkip("bundle size: needs the app bundle, Phase 1") }

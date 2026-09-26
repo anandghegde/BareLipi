@@ -1,4 +1,8 @@
 {
+  "find.10mb" : 12.162,
+  "find.10mb.no-match" : 5.966,
+  "find.10mb.regex" : 51.849,
+  "find.10mb.replace-all" : 719.089,
   "key.10mb.memory" : 1.359,
   "key.10mb.p50" : 8.9380000000000006,
   "key.10mb.p99" : 12.303000000000001,

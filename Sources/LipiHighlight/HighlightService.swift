@@ -28,6 +28,40 @@ public final class HighlightService: @unchecked Sendable {
     private struct Key: Hashable {
         var grammar: String
         var text: String
+        /// Lines highlighted, for fences over `windowedLineThreshold` lines.
+        var window: Range<Int>?
+    }
+
+    /// Fences with more lines than this are highlighted only within a window
+    /// of lines around what is on screen (§6.5: "the visible range plus one
+    /// screen").
+    public static let windowedLineThreshold = 5000
+
+    /// Lines in `code` (a trailing newline does not open a counted line).
+    public static func lineCount(of code: String) -> Int {
+        var count = 0
+        var last: UInt8 = 0x0A
+        for byte in code.utf8 {
+            if byte == 0x0A { count += 1 }
+            last = byte
+        }
+        return last == 0x0A ? count : count + 1
+    }
+
+    /// UTF-16 range of `lines` (0-based, end exclusive, clamped) in `code`.
+    public static func utf16Range(ofLines lines: Range<Int>, in code: String) -> Range<Int> {
+        var line = 0
+        var lower: Int? = lines.lowerBound <= 0 ? 0 : nil
+        var offset = 0
+        for unit in code.utf16 {
+            offset += 1
+            if unit == 0x0A {
+                line += 1
+                if line == lines.lowerBound { lower = offset }
+                if line == lines.upperBound { return (lower ?? offset)..<offset }
+            }
+        }
+        return (lower ?? offset)..<offset
     }
 
     private struct Entry {
@@ -55,8 +89,8 @@ public final class HighlightService: @unchecked Sendable {
 
     /// Spans for `code` if cached; otherwise schedules it and returns a
     /// provisional result (possibly empty). Cheap: one hash of the text.
-    public func lookup(code: String, grammar: Grammar) -> Result {
-        let key = Key(grammar: grammar.id, text: code)
+    public func lookup(code: String, grammar: Grammar, window: Range<Int>? = nil) -> Result {
+        let key = Key(grammar: grammar.id, text: code, window: window)
         lock.lock()
         clock += 1
         if var entry = cache[key] {
@@ -94,7 +128,7 @@ public final class HighlightService: @unchecked Sendable {
             other.grammar != key.grammar || !(other.text.utf8.prefix(32).elementsEqual(head) || other.text.utf8.suffix(32).elementsEqual(tail))
         }
         lock.unlock()
-        let spans = HighlightService.compute(code: key.text, grammar: request.grammar)
+        let spans = HighlightService.compute(code: key.text, grammar: request.grammar, window: key.window)
         store(key, spans)
         lock.lock()
         let more = !pending.isEmpty
@@ -108,12 +142,12 @@ public final class HighlightService: @unchecked Sendable {
 
     /// Computes (or returns the cached) spans synchronously. Used by export
     /// and tests; never on the main thread in the editor.
-    public func highlight(code: String, grammar: Grammar) -> [HighlightSpan] {
-        let key = Key(grammar: grammar.id, text: code)
+    public func highlight(code: String, grammar: Grammar, window: Range<Int>? = nil) -> [HighlightSpan] {
+        let key = Key(grammar: grammar.id, text: code, window: window)
         lock.lock()
         if let entry = cache[key] { lock.unlock(); return entry.spans }
         lock.unlock()
-        let spans = HighlightService.compute(code: code, grammar: grammar)
+        let spans = HighlightService.compute(code: code, grammar: grammar, window: window)
         store(key, spans)
         return spans
     }
@@ -204,7 +238,8 @@ public final class HighlightService: @unchecked Sendable {
         return body(parser)
     }
 
-    static func compute(code: String, grammar: Grammar) -> [HighlightSpan] {
+    /// Spans of `code`; with `window` (lines), only those within it.
+    static func compute(code: String, grammar: Grammar, window: Range<Int>? = nil) -> [HighlightSpan] {
         guard !code.isEmpty, let language = grammar.language, let query = grammar.query else { return [] }
         let utf16 = Array(code.utf16)
         return withParser { parser in
@@ -215,7 +250,8 @@ public final class HighlightService: @unchecked Sendable {
                 }
                 guard let tree else { return [] }
                 defer { ts_tree_delete(tree) }
-                return query.spans(root: ts_tree_root_node(tree), utf16: buffer)
+                let range = window.map { utf16Range(ofLines: $0, in: code) }
+                return query.spans(root: ts_tree_root_node(tree), utf16: buffer, window: range)
             }
         }
     }

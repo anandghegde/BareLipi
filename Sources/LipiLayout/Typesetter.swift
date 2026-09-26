@@ -63,6 +63,13 @@ public struct Typesetter {
     public let cascade: FontCascade
     /// Colours fenced code (P0-05). `nil` leaves code in the code ink.
     public var highlighter: HighlightService?
+    /// Lines to highlight in fences longer than
+    /// `HighlightService.windowedLineThreshold`, by block (set by
+    /// `DocumentLayout` from the viewport). A long fence without an entry
+    /// gets its first `codeWindowLines` lines.
+    public var codeWindows: [NodeID: Range<Int>] = [:]
+    /// Lines in a highlight window of a very long fence.
+    public static let codeWindowLines = 1024
 
     public init(scale: TypeScale, cascade: FontCascade, highlighter: HighlightService? = .shared) {
         self.scale = scale
@@ -132,7 +139,28 @@ public struct Typesetter {
         let lower = utf16.index(utf16.startIndex, offsetBy: range.lowerBound)
         let upper = utf16.index(lower, offsetBy: range.count)
         let code = String(cell.text[lower..<upper])
-        return CodeHighlight(range: range, result: highlighter.lookup(code: code, grammar: grammar))
+        return CodeHighlight(range: range, result: highlighter.lookup(code: code, grammar: grammar, window: codeWindow(of: block, code: code)))
+    }
+
+    /// The highlight window of a fence: nil (everything) unless it is longer
+    /// than `HighlightService.windowedLineThreshold` lines.
+    func codeWindow(of block: DisplayBlock, code: String) -> Range<Int>? {
+        // Every line takes at least one byte.
+        guard code.utf8.count > HighlightService.windowedLineThreshold,
+              HighlightService.lineCount(of: code) > HighlightService.windowedLineThreshold else { return nil }
+        return codeWindows[block.id] ?? 0..<Self.codeWindowLines
+    }
+
+    /// The code text of a code block (its `.code` runs; no fences), for
+    /// the header's Copy.
+    public func codeText(of block: DisplayBlock) -> String? {
+        guard case .code = block.role, let cell = block.cells.first,
+              let first = cell.runs.first(where: { $0.style.contains(.code) && !$0.range.isEmpty }),
+              let last = cell.runs.last(where: { $0.style.contains(.code) && !$0.range.isEmpty }) else { return nil }
+        let utf16 = cell.text.utf16
+        let lower = utf16.index(utf16.startIndex, offsetBy: first.range.lowerBound)
+        let upper = utf16.index(utf16.startIndex, offsetBy: last.range.upperBound)
+        return String(cell.text[lower..<upper])
     }
 
     /// The highlight stamp of a block's code (0 when it is not highlighted):

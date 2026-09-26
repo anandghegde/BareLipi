@@ -547,6 +547,8 @@ public final class BlockLayout {
     private let storedHeight: CGFloat
     /// Space below a table's grid, inside the block's box.
     private let tableSpacing: CGFloat
+    /// Header row and line-number gutter of a code block.
+    public let code: CodeChrome?
 
     /// Height of the block's own box (padding included, spacing excluded).
     /// For a table it includes the estimates of rows not measured yet.
@@ -569,8 +571,9 @@ public final class BlockLayout {
 
     init(id: NodeID, layoutKey: UInt64, role: BlockRole, style: TextStyle, context: BlockContext, isRevealed: Bool,
          width: CGFloat, indent: CGFloat, cells: [CellLayout], cellFrames: [CGRect], table: TableLayout?, height: CGFloat,
-         tableSpacing: CGFloat = 0) {
+         tableSpacing: CGFloat = 0, code: CodeChrome? = nil) {
         self.id = id
+        self.code = code
         self.layoutKey = layoutKey
         self.role = role
         self.style = style
@@ -617,7 +620,8 @@ extension LayoutEngine {
     /// Lays out `block` for a text column of `measure` points; code blocks
     /// and tables may use `wideWidth` (editor width minus margins) instead.
     public static func layout(_ block: DisplayBlock, typesetter: Typesetter, measure: CGFloat, wideWidth: CGFloat,
-                              previous: BlockLayout? = nil, growOnly: Bool = false) -> BlockLayout {
+                              previous: BlockLayout? = nil, growOnly: Bool = false,
+                              codeOptions: CodeBlockOptions = CodeBlockOptions()) -> BlockLayout {
         let scale = typesetter.scale
         let indent = indent(for: block.context, scale: scale)
         let isWide: Bool = {
@@ -631,6 +635,11 @@ extension LayoutEngine {
 
         if block.table != nil {
             return layoutTable(block, typesetter: typesetter, width: width, indent: indent, style: style, previous: previous, growOnly: growOnly)
+        }
+
+        if case .code(let info, let isFenced) = block.role {
+            return layoutCode(block, info: info, isFenced: isFenced, typesetter: typesetter, width: width, indent: indent,
+                              style: style, options: codeOptions)
         }
 
         let typesetCell = typesetter.typeset(block.cells[0], in: block, cellIndex: 0)

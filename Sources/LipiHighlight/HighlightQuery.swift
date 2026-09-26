@@ -229,13 +229,18 @@ public final class HighlightQuery: @unchecked Sendable {
     // MARK: Running
 
     /// Highlights of `root` over `utf16` (the parsed text), as a token per
-    /// UTF-16 unit run-length encoded into spans.
-    func spans(root: TSNode, utf16: UnsafeBufferPointer<UInt16>) -> [HighlightSpan] {
+    /// UTF-16 unit run-length encoded into spans. With `window` (UTF-16),
+    /// only matches intersecting it are run (very large fences, §6.5).
+    func spans(root: TSNode, utf16: UnsafeBufferPointer<UInt16>, window: Range<Int>? = nil) -> [HighlightSpan] {
         let length = utf16.count
         guard length > 0 else { return [] }
         guard let cursor = ts_query_cursor_new() else { return [] }
         defer { ts_query_cursor_delete(cursor) }
         ts_query_cursor_set_match_limit(cursor, 2048)
+        if let window {
+            let lo = min(max(0, window.lowerBound), length), hi = min(max(lo, window.upperBound), length)
+            ts_query_cursor_set_byte_range(cursor, UInt32(lo * 2), UInt32(hi * 2))
+        }
         ts_query_cursor_exec(cursor, query, root)
 
         struct Hit {

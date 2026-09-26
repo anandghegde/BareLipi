@@ -353,7 +353,8 @@ struct EntryProjector {
         cell = builder.finish(end: end, resolve: .before)
         last.cells.append(cell)
         last = DisplayBlock(id: last.id, sourceRange: last.sourceRange.lowerBound..<end, role: last.role,
-                            context: last.context, isRevealed: last.isRevealed, cells: last.cells, table: last.table)
+                            context: last.context, isRevealed: last.isRevealed, cells: last.cells, table: last.table,
+                            isUnclosedFence: last.isUnclosedFence)
         blocks.append(last)
         cursor = end
     }
@@ -466,6 +467,7 @@ struct EntryProjector {
         let r = block.range
         var builder = CellBuilder(bytes: bytes, start: cursor)
         var role: BlockRole = .paragraph
+        var isUnclosedFence = false
         let end = max(r.upperBound, cursor)
 
         switch block.kind {
@@ -495,6 +497,7 @@ struct EntryProjector {
             }
         case .codeBlock(let info):
             role = .code(info: info.info, isFenced: info.isFenced)
+            isUnclosedFence = info.isFenced && !info.isClosed
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
             if info.isFenced {
                 var contentEnd = info.contentRange.upperBound
@@ -532,7 +535,7 @@ struct EntryProjector {
         }
         let cell = builder.finish(end: end, resolve: .before)
         blocks.append(DisplayBlock(id: block.id, sourceRange: cursor..<end, role: role, context: context,
-                                   isRevealed: revealed, cells: [cell]))
+                                   isRevealed: revealed, cells: [cell], isUnclosedFence: isUnclosedFence))
         cursor = end
     }
 

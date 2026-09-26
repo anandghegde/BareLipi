@@ -39,6 +39,10 @@ public struct Renderer {
                     }
                     continue
                 }
+                if let chrome = block.code {
+                    drawCode(block, chrome: chrome, box: box, layout: layout, in: ctx, dirty: dirty)
+                    continue
+                }
                 for (c, cell) in block.cells.enumerated() {
                     let frame = block.cellFrames[c].offsetBy(dx: x0, dy: top)
                     guard frame.intersects(dirty) || frame.height == 0 else { continue }
@@ -138,5 +142,69 @@ public struct Renderer {
         let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
         ctx.textPosition = CGPoint(x: box.minX - width - 8, y: box.minY + block.cellFrame(0).minY + first.baseline)
         CTLineDraw(line, ctx)
+    }
+
+    /// A code block's header row, line numbers, and code; unwrapped code is
+    /// clipped to its viewport and drawn at its sideways scroll (§6.5).
+    func drawCode(_ block: BlockLayout, chrome: CodeChrome, box: CGRect, layout: DocumentLayout, in ctx: CGContext, dirty: CGRect) {
+        if let header = LayoutEngine.codeHeader(of: block, typesetter: typesetter, options: layout.codeOptions),
+           header.row.offsetBy(dx: box.minX, dy: box.minY).intersects(dirty) {
+            ctx.textPosition = CGPoint(x: box.minX + header.labelOrigin.x, y: box.minY + header.labelOrigin.y)
+            CTLineDraw(header.label, ctx)
+            if let pill = header.pill {
+                ctx.setStrokeColor(colors.warning.cgColor)
+                ctx.setLineWidth(1)
+                ctx.addPath(CGPath(roundedRect: pill.rect.offsetBy(dx: box.minX, dy: box.minY).insetBy(dx: 0.5, dy: 0.5),
+                                   cornerWidth: 4, cornerHeight: 4, transform: nil))
+                ctx.strokePath()
+                ctx.textPosition = CGPoint(x: box.minX + pill.origin.x, y: box.minY + pill.origin.y)
+                CTLineDraw(pill.line, ctx)
+            }
+            for item in header.buttons {
+                ctx.textPosition = CGPoint(x: box.minX + item.origin.x, y: box.minY + item.origin.y)
+                CTLineDraw(item.line, ctx)
+            }
+        }
+        guard block.cellCount > 0 else { return }
+        let cell = block.cell(0)
+        let frame = block.cellFrames[0].offsetBy(dx: box.minX, dy: box.minY)
+        if chrome.gutterWidth > 0, !chrome.lineStarts.isEmpty, !cell.lines.isEmpty {
+            // Only the numbers of the lines under the dirty rect.
+            let firstFragment = cell.lineIndex(atY: dirty.minY - frame.minY)
+            let lastFragment = cell.lineIndex(atY: dirty.maxY - frame.minY)
+            var k = chrome.lineStarts.partitioningIndex { $0 >= firstFragment }
+            if k > 0 { k -= 1 }
+            while k < chrome.lineStarts.count, chrome.lineStarts[k] <= lastFragment {
+                let line = cell.lines[chrome.lineStarts[k]]
+                let number = CTLineCreateWithAttributedString(typesetter.attributedString(String(k + 1), role: .codeBlock, ink: .muted))
+                let width = CGFloat(CTLineGetTypographicBounds(number, nil, nil, nil))
+                ctx.textPosition = CGPoint(x: frame.minX - typesetter.scale.l(10) - width, y: frame.minY + line.baseline)
+                CTLineDraw(number, ctx)
+                k += 1
+            }
+        }
+        guard frame.intersects(dirty) || frame.height == 0 else { return }
+        if chrome.wraps {
+            draw(cell, at: frame.origin, in: ctx, dirty: dirty)
+            return
+        }
+        let scroll = layout.codeScrollOffset(of: block)
+        ctx.saveGState()
+        ctx.clip(to: CGRect(x: frame.minX, y: box.minY, width: chrome.viewportWidth, height: box.height))
+        draw(cell, at: CGPoint(x: frame.minX - scroll, y: frame.minY), in: ctx, dirty: dirty)
+        ctx.restoreGState()
+    }
+}
+
+private extension Array {
+    /// The first index whose element satisfies `predicate` (which must be
+    /// false then true along the array).
+    func partitioningIndex(where predicate: (Element) -> Bool) -> Int {
+        var lo = 0, hi = count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if predicate(self[mid]) { hi = mid } else { lo = mid + 1 }
+        }
+        return lo
     }
 }

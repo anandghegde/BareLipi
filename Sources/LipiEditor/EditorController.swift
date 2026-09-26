@@ -641,7 +641,7 @@ public final class EditorController {
     }
 
     /// Runs steps 4–8: reveal set, projection, layout update, caret rect.
-    private func refresh(textChanged: Bool, started: DispatchTime, pinned: (offset: Int, rect: CGRect)? = nil) -> EditorChange {
+    func refresh(textChanged: Bool, started: DispatchTime, pinned: (offset: Int, rect: CGRect)? = nil) -> EditorChange {
         let reveal: RevealSet
         if mode == .source {
             reveal = .everything
@@ -667,6 +667,8 @@ public final class EditorController {
         case .textkit2:
             structure = updateTextKit(result)
         }
+        // Unwrapped code scrolls sideways to keep the caret in view.
+        if engine == .lipi, let p = projection.position(forSource: selection.head) { layout.revealCodeCaret(at: p) }
         let rect = caretRect(forSource: selection.head)
         let seconds = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
         stats.lastPipelineSeconds = seconds

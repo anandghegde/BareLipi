@@ -66,7 +66,7 @@ public final class DocumentLayout {
         public var blocksFromCache = 0
     }
 
-    public private(set) var typesetter: Typesetter
+    public internal(set) var typesetter: Typesetter
     public let cache: LayoutCache
     public private(set) var themeRevision: UInt32 = 0
     public private(set) var projection = Projection()
@@ -82,9 +82,19 @@ public final class DocumentLayout {
     public var bottomPadding: CGFloat = 0
     /// Entry holding the caret when it sits in a table: its columns never shrink.
     public var growOnlyEntry: Int? = nil
+    /// Line numbers and soft wrap of code blocks (the code header toggles).
+    public var codeOptions = CodeBlockOptions() {
+        didSet {
+            guard codeOptions != oldValue else { return }
+            themeRevision &+= 1
+            invalidateAllLayouts()
+        }
+    }
+    /// Sideways scroll of unwrapped code blocks, by block.
+    var codeScroll: [NodeID: CGFloat] = [:]
     public private(set) var stats = Stats()
 
-    private var layouts: [EntryLayout?] = []
+    var layouts: [EntryLayout?] = []
     private var tree = HeightTree()
     /// Layouts of entries replaced by the last `update`, kept for one round
     /// so tables can re-layout incrementally from them.
@@ -122,7 +132,9 @@ public final class DocumentLayout {
     }
 
     public func setTypesetter(_ typesetter: Typesetter) {
+        let windows = self.typesetter.codeWindows
         self.typesetter = typesetter
+        self.typesetter.codeWindows = windows
         themeRevision &+= 1
         zeroAdvance = typesetter.cascade.zeroAdvance(size: typesetter.scale.style(for: .body).size)
         cache.removeAll()
@@ -185,6 +197,7 @@ public final class DocumentLayout {
             guard let layout = layouts[j] else { continue }
             for block in layout.blocks { cache.invalidate(block.id) }
         }
+        carryCodeState(from: old, to: new, changed: result.changedEntries, oldByID: oldByID, sameShape: sameShape)
         for (i, entry) in new.entries.enumerated() {
             if !changed.contains(i), let j = oldByID[entry.id] {
                 newLayouts.append(layouts[j])
@@ -255,7 +268,7 @@ public final class DocumentLayout {
                     prior = previous.blocks[b]
                 }
                 layout = LayoutEngine.layout(block, typesetter: typesetter, measure: measure, wideWidth: wideWidth,
-                                             previous: prior, growOnly: growOnlyEntry == i)
+                                             previous: prior, growOnly: growOnlyEntry == i, codeOptions: codeOptions)
                 cache.insert(layout, for: key)
                 stats.blocksLaidOut += 1
             }
@@ -277,7 +290,8 @@ public final class DocumentLayout {
         while i < tree.count {
             let y = CGFloat(tree.y(of: i))
             if y > range.upperBound { break }
-            let layout = ensureLayout(i)
+            var layout = ensureLayout(i)
+            if moveCodeWindows(i, layout, entryY: y, visible: range) { layout = ensureLayout(i) }
             if layout.hasTable {
                 // Measure the table rows on screen; the ones above keep
                 // their heights, so the entry's top does not move.
@@ -329,7 +343,7 @@ public final class DocumentLayout {
         let block = entry.blocks[position.block]
         var frame = block.cellFrame(position.cell)
         sync(position.entry, entry)
-        frame.origin.x += x(of: block)
+        frame.origin.x += x(of: block) - codeScrollOffset(of: block)
         frame.origin.y += CGFloat(tree.y(of: position.entry)) + entry.blockTops[position.block]
         return frame
     }
@@ -364,7 +378,7 @@ public final class DocumentLayout {
         let localY = point.y - CGFloat(tree.y(of: i))
         let b = entry.blockIndex(atY: localY)
         let block = entry.blocks[b]
-        let blockPoint = CGPoint(x: point.x - x(of: block), y: localY - entry.blockTops[b])
+        let blockPoint = CGPoint(x: point.x - x(of: block) + codeScrollOffset(of: block), y: localY - entry.blockTops[b])
         // Typesets the table rows it walks through; measuring a row moves
         // only the blocks and entries after it, never this block's top.
         let c = block.cellIndex(at: blockPoint)

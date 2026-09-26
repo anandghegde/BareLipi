@@ -477,6 +477,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.clickCodeHeader(at: point) { return }
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.toggleTask(at: point) { return }
         guard let offset = controller.sourceOffset(at: point) else { return }
         if event.clickCount == 2 {

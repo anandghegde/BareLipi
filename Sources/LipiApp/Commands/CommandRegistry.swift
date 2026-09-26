@@ -301,6 +301,12 @@ extension CommandRegistry {
         add("view.focusMode", "Focus Mode", #selector(EditorView.toggleFocusMode(_:)), "F8")
         add("view.typewriterMode", "Typewriter Mode", #selector(EditorView.toggleTypewriterMode(_:)), "F9")
         add("view.zenMode", "Zen Mode", #selector(DocumentWindowController.toggleZenMode(_:)), "Cmd-Ctrl-Shift-F")
+        // §6.13: opt-in inline syntaxes, app-wide.
+        submenu = "Markdown Extensions"
+        add("view.syntax.subscript", "Subscript ~x~", #selector(DocumentWindowController.toggleSubscriptSyntax(_:)), documentsOnly: true)
+        add("view.syntax.superscript", "Superscript ^x^", #selector(DocumentWindowController.toggleSuperscriptSyntax(_:)), documentsOnly: true)
+        add("view.syntax.highlight", "Highlight ==x==", #selector(DocumentWindowController.toggleHighlightSyntax(_:)), documentsOnly: true)
+        submenu = nil
         group = 3
         add("view.zoomIn", "Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "Cmd-=", "Cmd-+")
         add("view.zoomOut", "Zoom Out", #selector(DocumentWindowController.zoomOut(_:)), "Cmd--")

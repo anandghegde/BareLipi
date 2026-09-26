@@ -80,6 +80,24 @@ struct TypesetterTests {
         #expect(cell.decorations.contains { $0.kind == .strikethrough })
     }
 
+    @Test func subscriptSuperscriptAndHighlight() {
+        var options = ParserOptions.editor
+        options.extensions.formUnion([.subscript, .superscript, .highlight])
+        let doc = Doc("H~2~O 2^10^ ==hi==", options: options)
+        let block = doc.block(0)
+        let cell = typesetter.typeset(block.cells[0], in: block, cellIndex: 0)
+        #expect(cell.attributed.string == "H2O 210 hi")
+        let runs = block.cells[0].runs
+        let sub = runs.first { $0.style.contains(.subscript) }!
+        let sup = runs.first { $0.style.contains(.superscript) }!
+        #expect(cell.attributed.attribute(.superscript, at: sub.range.lowerBound, effectiveRange: nil) as? Int == -1)
+        #expect(cell.attributed.attribute(.superscript, at: sup.range.lowerBound, effectiveRange: nil) as? Int == 1)
+        let font = cell.attributed.attribute(.font, at: sup.range.lowerBound, effectiveRange: nil) as! CTFont
+        #expect(CTFontGetSize(font) == (17 * 0.75).rounded())
+        let mark = runs.first { $0.style.contains(.highlight) }!
+        #expect(cell.decorations.contains { $0.kind == .highlight && $0.range == mark.range })
+    }
+
     @Test func linkChipCarriesARunDelegateAndAttachment() {
         // Balanced preset: the destination folds to a chip while the caret is
         // in the label (caret 6 is inside "docs").

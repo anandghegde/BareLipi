@@ -12,9 +12,9 @@ struct Doc {
     let policy: RevealPolicy
     var caret: Int
 
-    init(_ text: String, caret: Int = 0, preset: RevealPreset = .balanced) {
+    init(_ text: String, caret: Int = 0, preset: RevealPreset = .balanced, options: ParserOptions = .editor) {
         buffer = SourceBuffer(text)
-        parser = LipiParser(options: .editor)
+        parser = LipiParser(options: options)
         parser.parse(buffer.rope)
         policy = RevealPolicy(preset: preset)
         projection = Projection(preset: preset)

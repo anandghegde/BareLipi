@@ -70,7 +70,7 @@ extension DocumentWindowController {
 
 extension DocumentWindowController: NSMenuItemValidation {
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        validateViewItem(menuItem) ?? validateSidebarItem(menuItem) ?? true
+        validateViewItem(menuItem) ?? validateSidebarItem(menuItem) ?? validateSyntaxItem(menuItem) ?? true
     }
 }
 

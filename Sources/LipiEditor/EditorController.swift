@@ -126,13 +126,36 @@ public final class EditorController {
     /// Replaces the whole document (open, revert). Clears the undo history.
     public func load(_ text: String) {
         buffer.reset(to: text)
-        parser = LipiParser(options: .editor)
+        parser = LipiParser(options: parserOptions)
         parser.parse(buffer.rope)
         selection = SelectionModel(caret: 0)
         marked = nil
         typingKind = nil
         pairClosers.removeAll()
         _ = refresh(textChanged: true, started: DispatchTime.now())
+    }
+
+    /// Parser extensions (§6.13): the opt-in `~sub~`/`^sup^` and
+    /// `==highlight==` syntaxes. Changing them re-parses and re-projects the
+    /// document; the text, selection and undo history are kept.
+    public var parserOptions: ParserOptions = .editor {
+        didSet {
+            guard parserOptions.extensions != oldValue.extensions || parserOptions.keepFootnotes != oldValue.keepFootnotes else { return }
+            parser = LipiParser(options: parserOptions)
+            parser.parse(buffer.rope)
+            projection = Projection(preset: projection.preset)
+            _ = refresh(textChanged: true, started: DispatchTime.now())
+            onRedisplay?()
+        }
+    }
+
+    /// Turns the opt-in inline syntaxes on or off.
+    public func setOptionalSyntax(subscript sub: Bool, superscript sup: Bool, highlight: Bool) {
+        var options = parserOptions
+        for (flag, on) in [(ParserOptions.Extensions.subscript, sub), (.superscript, sup), (.highlight, highlight)] {
+            if on { options.extensions.insert(flag) } else { options.extensions.remove(flag) }
+        }
+        parserOptions = options
     }
 
     public func setViewportWidth(_ width: CGFloat) {

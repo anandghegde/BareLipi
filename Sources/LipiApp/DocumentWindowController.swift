@@ -43,6 +43,7 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
             self?.editorDidChange(change)
         }
         counts.setNeedsUpdate(textChanged: true)
+        observeOptionalSyntax()
     }
 
     private func editorDidChange(_ change: EditorChange) {

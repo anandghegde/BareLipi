@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (debug)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          # Newest installed Xcode 26.x; the package needs Swift 6 and the macOS 26 SDK.
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -z "$xcode" ]; then
+            echo "::error::No Xcode 26 on this runner"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          echo "Using $xcode"
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        # The whole suite: filtering down to the AppKit editor suites alone aborts the run.
+        run: swift test
+
+  perf:
+    name: Perf harness (release, advisory)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # Shared runners are noisy and are not the machine the baselines were
+    # recorded on (Baselines/m4.json); report, never block.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -z "$xcode" ]; then
+            echo "::error::No Xcode 26 on this runner"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Perf tests (gated)
+        env:
+          LIPI_PERF_GATE: "1"
+        run: |
+          set -o pipefail
+          swift test -c release --filter LipiPerfTests 2>&1 | tee perf.log
+
+      - name: Upload perf log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-log
+          path: perf.log
+          if-no-files-found: warn

@@ -47,8 +47,10 @@ public final class LayoutCache {
 
     public var count: Int { entries.count }
 
+    /// Lines held by `layout` when inserted (a table counts the rows
+    /// realized so far; later rows add to it without being re-weighed).
     static func weight(of layout: BlockLayout) -> Int {
-        layout.cells.reduce(0) { $0 + max(1, $1.lines.count) }
+        max(1, layout.lineCount)
     }
 
     public func layout(for key: LayoutKey) -> BlockLayout? {

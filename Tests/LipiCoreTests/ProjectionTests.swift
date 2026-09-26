@@ -620,6 +620,58 @@ struct ProjectionUpdateTests {
         }
     }
 
+    @Test("table row edits re-project one row and match a full rebuild")
+    func tableRowPatches() {
+        for seed in UInt64(1)...6 {
+            var rng = SplitMix64(seed: seed)
+            var buffer = SourceBuffer(tableDocument(rows: 40, seed: seed))
+            var parser = LipiParser(options: .editor)
+            parser.parse(buffer.rope)
+            var projection = Projection()
+            let policy = RevealPolicy()
+            projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+            var patched = 0
+            for step in 0..<120 {
+                let edit = tableRowEdit(&rng, index: parser.index, rope: buffer.rope)
+                let delta = buffer.apply(edit)
+                parser.apply(delta, then: buffer.rope)
+                // Alternate between a caret reveal, reveal-all and no reveal.
+                let caret = delta.newRange.upperBound.byte
+                let reveal = step % 9 == 8 ? RevealSet.everything
+                    : policy.revealSet(caret: caret, index: parser.index, rope: buffer.rope)
+                let result = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
+                patched += result.rowPatched
+                let text = buffer.rope.string(in: 0..<buffer.count)
+                checkInvariants(text, projection, "seed \(seed) step \(step)")
+                // Exactly what a full rebuild from the same index produces…
+                var rebuilt = Projection()
+                rebuilt.update(index: parser.index, rope: buffer.rope, reveal: reveal)
+                let exact = projection.entries.map(\.blocks) == rebuilt.entries.map(\.blocks)
+                #expect(exact, "seed \(seed) step \(step) edit \(edit)")
+                // …and what a fresh parse projects.
+                var fresh = LipiParser(options: .editor)
+                fresh.parse(buffer.rope)
+                var freshProjection = Projection()
+                freshProjection.update(index: fresh.index, rope: buffer.rope,
+                                       reveal: step % 9 == 8 ? .everything : policy.revealSet(caret: caret, index: fresh.index, rope: buffer.rope))
+                #expect(sameBlocks(projection, freshProjection), "seed \(seed) step \(step) edit \(edit)")
+                if !exact {
+                    for (x, y) in zip(projection.entries, rebuilt.entries) where x.blocks != y.blocks {
+                        let cx = x.blocks[0].cells, cy = y.blocks[0].cells
+                        if let c = cx.indices.first(where: { $0 >= cy.count || cx[$0] != cy[$0] }) {
+                            Issue.record("entry \(x.id) cell \(c) of \(cx.count)/\(cy.count):\n  patched \(cx[c])\n  rebuilt \(c < cy.count ? "\(cy[c])" : "-")")
+                        } else {
+                            Issue.record("entry \(x.id): cells equal; patched \(x.blocks[0].sourceRange) key \(x.blocks[0].layoutKey) rebuilt \(y.blocks[0].sourceRange) key \(y.blocks[0].layoutKey)")
+                        }
+                        break
+                    }
+                    break
+                }
+            }
+            #expect(patched > 40, "seed \(seed): \(patched) row patches")
+        }
+    }
+
     @Test("positions round-trip through the document")
     func positions() {
         let text = "# One\n\nPara **bold** here\n\n| a | b |\n|---|---|\n| c | d |"

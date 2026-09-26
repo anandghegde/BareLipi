@@ -59,6 +59,12 @@ public struct DisplayCell: Sendable, Hashable {
                     map: OffsetMap(segments: [], sourceRange: offset..<offset, displayLength: 0, displayLengthUTF8: 0))
     }
 
+    /// Moves the cell's source side by `delta` bytes (its text is unchanged).
+    mutating func shift(by delta: Int) {
+        sourceRange = (sourceRange.lowerBound + delta)..<(sourceRange.upperBound + delta)
+        map.shift(by: delta)
+    }
+
     /// Display offset (UTF-16) of a local source offset.
     public func displayOffset(forSource offset: Int) -> Int {
         withUTF8 { map.sourceToDisplay(offset, utf8: $0) }
@@ -141,6 +147,9 @@ public struct DisplayBlock: Sendable, Hashable {
     /// Deterministic hash of the visible content (text, runs, role, context,
     /// reveal state) for layout caching; independent of the block's position.
     public var layoutKey: UInt64
+    /// A table's per-row content hashes, which `layoutKey` combines, so that
+    /// re-projecting one row rehashes only that row. Empty for other blocks.
+    var rowKeys: [UInt64] = []
 
     public init(id: NodeID, sourceRange: Range<Int>, role: BlockRole, context: BlockContext, isRevealed: Bool,
                 cells: [DisplayCell], table: TableShape? = nil) {
@@ -152,7 +161,24 @@ public struct DisplayBlock: Sendable, Hashable {
         self.cells = cells
         self.table = table
         self.layoutKey = 0
+        if let table { rowKeys = (0..<table.rows).map(rowKey) }
         self.layoutKey = computeLayoutKey()
+    }
+
+    /// A table block whose cells differ from `old`'s only in `changedRows`
+    /// (and in source offsets, which the key ignores).
+    init(table old: DisplayBlock, sourceRange: Range<Int>, cells: [DisplayCell], changedRows: [Int]) {
+        id = old.id
+        self.sourceRange = sourceRange
+        role = old.role
+        context = old.context
+        isRevealed = old.isRevealed
+        self.cells = cells
+        table = old.table
+        rowKeys = old.rowKeys
+        layoutKey = 0
+        for r in changedRows { rowKeys[r] = rowKey(r) }
+        layoutKey = computeLayoutKey()
     }
 
     /// The cell whose source range contains `offset` (local); the last cell
@@ -171,14 +197,20 @@ public struct DisplayBlock: Sendable, Hashable {
         h.combine(role)
         h.combine(context)
         h.combine(isRevealed ? 1 : 0)
-        if let table { h.combine(table.columns); h.combine(table.rows); for a in table.alignments { h.combine(a) } }
-        for cell in cells {
-            h.combine(cell.text)
-            for run in cell.runs {
-                h.combine(run.range.lowerBound); h.combine(run.range.upperBound); h.combine(Int(run.style.rawValue))
-            }
-            h.combine(0x1F)
+        if let table {
+            h.combine(table.columns); h.combine(table.rows); for a in table.alignments { h.combine(a) }
+            for k in rowKeys { h.combine(Int(bitPattern: UInt(k))) }
+            return h.value
         }
+        for cell in cells { h.combine(cell) }
+        return h.value
+    }
+
+    private func rowKey(_ row: Int) -> UInt64 {
+        var h = FNV1a()
+        guard let table else { return 0 }
+        let first = row * table.columns
+        for c in first..<min(first + table.columns, cells.count) { h.combine(cells[c]) }
         return h.value
     }
 }
@@ -221,6 +253,13 @@ struct FNV1a {
         var s = s
         s.withUTF8 { for b in $0 { combine(b) } }
         combine(0xFF)
+    }
+    mutating func combine(_ cell: DisplayCell) {
+        combine(cell.text)
+        for run in cell.runs {
+            combine(run.range.lowerBound); combine(run.range.upperBound); combine(Int(run.style.rawValue))
+        }
+        combine(0x1F)
     }
     mutating func combine(_ role: BlockRole) {
         switch role {

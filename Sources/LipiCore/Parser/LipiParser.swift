@@ -80,6 +80,8 @@ public struct ParseStats: Sendable, Equatable {
     /// Whether the most recent `reparse` needed a second pass because the
     /// document's reference definitions changed.
     public var lastReparseHadReferencePass = false
+    /// Table rows re-parsed in place (without re-parsing their table), all runs.
+    public var tableRowReparses = 0
 }
 
 /// Markdown parser over the vendored cmark-gfm with incremental re-parse.
@@ -180,6 +182,12 @@ public struct LipiParser: Sendable {
         var limit = index.count
         var replaced = 0
         while let cluster = index.lastDirtyCluster(before: limit) {
+            if cluster.count == 1, index.entries[cluster.lowerBound].pendingRowEdit != nil,
+               reparseTableRow(cluster.lowerBound, in: rope) {
+                replaced += 1
+                limit = cluster.lowerBound
+                continue
+            }
             guard let range = reparseCluster(cluster, in: rope, replaced: &replaced) else { return false }
             limit = range.lowerBound
         }
@@ -244,6 +252,79 @@ public struct LipiParser: Sendable {
             index.replace(lo...hi, with: replacement)
             return lo...(lo + max(replacement.count, 1) - 1)
         }
+    }
+
+    /// Re-parses the one edited body row of table entry `i` and splices it in,
+    /// keeping the table's and every other row's node identity. The row is
+    /// parsed behind the table's own header and delimiter lines, so cmark sees
+    /// the same column count and alignments; rows of a GFM table are
+    /// independent of each other, so that parse is the row's parse in the
+    /// whole document. Returns false (index untouched) when the edit may do
+    /// more than change the row: a newline was typed, the line no longer
+    /// continues the table, or it involves footnotes; the caller then
+    /// re-parses the entry as usual.
+    private mutating func reparseTableRow(_ i: Int, in rope: LipiRope) -> Bool {
+        let entry = index.entries[i]
+        guard let edit = entry.pendingRowEdit, case .table(let alignments) = entry.block.kind else { return false }
+        let rows = entry.block.children
+        let k = edit.row
+        guard k >= 1, k < rows.count, case .tableRow(isHeader: false) = rows[k].kind else { return false }
+        let start = index.start(of: i)
+        let end = start + entry.length
+        // Both rows start before the edit, so their absolute positions still hold.
+        let headerEnd = rope.lineRange(rope.line(at: start + rows[1].range.lowerBound)).lowerBound
+        let line = rope.lineRange(rope.line(at: start + rows[k].range.lowerBound))
+        guard headerEnd > start, line.upperBound <= end else { return false }
+
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(headerEnd - start + line.count)
+        rope.forEachChunk(in: start..<headerEnd) { bytes.append(contentsOf: $0.utf8) }
+        let rowOffset = bytes.count
+        rope.forEachChunk(in: line) { bytes.append(contentsOf: $0.utf8) }
+        // The line must still end after the inserted bytes: no newline typed.
+        let lineContentEnd = line.upperBound - (bytes.last == 0x0A ? 1 : 0)
+        guard lineContentEnd >= start + edit.oldRange.lowerBound + edit.newCount else { return false }
+        if options.extensions.contains(.footnotes) {
+            var p = rowOffset
+            while p + 1 < bytes.count {
+                if bytes[p] == 0x5B && bytes[p + 1] == 0x5E { return false }
+                p += 1
+            }
+        }
+        stats.regionParses += 1
+        stats.bytesParsed += bytes.count
+        let seeds = seedReferences(outside: start..<end)
+        let parsed = bytes.withUnsafeBufferPointer {
+            CMarkBridge.parse($0, options: options, references: seeds, ids: &ids)
+        }
+        guard parsed.count == 1, parsed[0].spanStart == 0, parsed[0].referenceDefinitions.isEmpty,
+              case .table(let newAlignments) = parsed[0].block.kind, newAlignments == alignments,
+              parsed[0].block.children.count == 2,
+              parsed[0].block.range.lowerBound == entry.block.range.lowerBound,
+              parsed[0].block.children[0].isStructurallyEqual(to: rows[0]) else { return false }
+        var row = parsed[0].block.children[1]
+        guard row.range.lowerBound >= rowOffset, case .tableRow(isHeader: false) = row.kind else { return false }
+        row.shift(by: (line.lowerBound - start) - rowOffset)
+
+        let delta = edit.newCount - edit.oldRange.count
+        var updated = index.take(i)
+        updated.block.children[k] = row
+        var r = k + 1
+        while r < updated.block.children.count {
+            updated.block.children[r].shift(by: delta)
+            r += 1
+        }
+        let first = updated.block.children[0].range.lowerBound
+        let last = updated.block.children[updated.block.children.count - 1].range.upperBound
+        updated.block.range = updated.block.range.lowerBound..<max(first, last)
+        updated.isDirty = false
+        updated.pendingRowEdit = nil
+        updated.hasBracket = edit.hadBracket || parsed[0].hasBracket
+        updated.tableRowEdit = TableRowEdit(row: k, lengthDelta: delta, baseRevision: updated.revision)
+        updated.revision &+= 1
+        index.update(i, with: updated)
+        stats.tableRowReparses += 1
+        return true
     }
 
     /// The clean entry before `lo`, absorbing dirty ones into the cluster.

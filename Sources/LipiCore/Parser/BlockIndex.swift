@@ -12,6 +12,16 @@ public struct BlockEntry: Sendable {
     var hasBracket: Bool
     /// Edited since the last parse; `block` is stale until re-parsed.
     public internal(set) var isDirty: Bool
+    /// Bumped whenever the parser changes `block` in place without giving it
+    /// a new identity (a table row re-parse). `block.id` and `revision`
+    /// together identify the entry's content.
+    public internal(set) var revision: UInt32 = 0
+    /// Set when the most recent re-parse of this entry replaced one table row
+    /// in place; lets `Projection` re-project just that row.
+    public internal(set) var tableRowEdit: TableRowEdit?
+    /// The single edit since the last parse, when it lies inside one body row
+    /// of a top-level table (see `LipiParser.reparseTableRow`).
+    var pendingRowEdit: PendingRowEdit?
 
     init(length: Int, block: Block, referenceDefinitions: [ReferenceDefinition] = [],
          hasBracket: Bool = true, isDirty: Bool = false) {
@@ -21,6 +31,28 @@ public struct BlockEntry: Sendable {
         self.hasBracket = hasBracket
         self.isDirty = isDirty
     }
+}
+
+/// One table row re-parsed in place by `LipiParser`.
+public struct TableRowEdit: Sendable, Hashable {
+    /// Index of the replaced row among the table's rows (row 0 is the header).
+    public var row: Int
+    /// Bytes added (positive) or removed by the edit; everything after the row moved by this much.
+    public var lengthDelta: Int
+    /// The entry's `revision` before the edit.
+    public var baseRevision: UInt32
+}
+
+/// An edit that stays inside one body row of a top-level table.
+struct PendingRowEdit: Sendable {
+    /// Row index in the table's children.
+    var row: Int
+    /// Replaced bytes, local to the entry, before the edit.
+    var oldRange: Range<Int>
+    /// Length of the inserted bytes.
+    var newCount: Int
+    /// The entry's `hasBracket` before the edit.
+    var hadBracket: Bool
 }
 
 /// The top-level blocks of a document as a flat, editable sequence of spans.
@@ -112,6 +144,11 @@ public struct BlockIndex: Sendable {
             return
         }
         var merged = entries[i]
+        merged.pendingRowEdit = i == j && !merged.isDirty
+            ? Self.rowEdit(in: merged, oldRange: (old.lowerBound - start(of: i))..<(old.upperBound - start(of: i)),
+                           newCount: new.count)
+            : nil
+        merged.tableRowEdit = nil
         merged.length = newLength
         merged.isDirty = true
         merged.hasBracket = true
@@ -122,9 +159,40 @@ public struct BlockIndex: Sendable {
         rebuildStarts(from: i)
     }
 
+    /// The row edit `oldRange → newCount bytes` makes in `entry`, when the
+    /// entry is a top-level table and the replaced bytes lie inside one body row.
+    private static func rowEdit(in entry: BlockEntry, oldRange: Range<Int>, newCount: Int) -> PendingRowEdit? {
+        guard case .table = entry.block.kind else { return nil }
+        let rows = entry.block.children
+        guard rows.count > 1 else { return nil }
+        var lo = 1, hi = rows.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if rows[mid].range.lowerBound <= oldRange.lowerBound { lo = mid } else { hi = mid - 1 }
+        }
+        let row = rows[lo].range
+        guard row.lowerBound <= oldRange.lowerBound, oldRange.upperBound <= row.upperBound else { return nil }
+        return PendingRowEdit(row: lo, oldRange: oldRange, newCount: newCount, hadBracket: entry.hasBracket)
+    }
+
     /// Flags entry `i` for re-parse without changing its length.
     mutating func markDirty(_ i: Int) {
         entries[i].isDirty = true
+        entries[i].pendingRowEdit = nil
+    }
+
+    /// Replaces entry `i` in place; its length must not change.
+    mutating func update(_ i: Int, with entry: BlockEntry) {
+        precondition(entry.length == entries[i].length)
+        entries[i] = entry
+    }
+
+    /// Takes entry `i` out for in-place mutation (the slot keeps a stub so the
+    /// entry's storage is uniquely referenced); put it back with `update`.
+    mutating func take(_ i: Int) -> BlockEntry {
+        var out = BlockEntry(length: entries[i].length, block: Block(id: entries[i].block.id, range: 0..<0, kind: .paragraph))
+        swap(&out, &entries[i])
+        return out
     }
 
     /// Replaces entries `range` with `replacement`.

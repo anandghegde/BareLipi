@@ -25,6 +25,47 @@ func randomEdit(_ rng: inout SplitMix64, in rope: LipiRope) -> Edit {
     return Edit(replacing: at..<at, with: editTokens[Int(rng.next() % UInt64(editTokens.count))])
 }
 
+/// A document with tables for the row re-parse tests: alignments, escaped
+/// pipes, short and long rows, inline markup and a reference link, between
+/// ordinary blocks.
+func tableDocument(rows: Int, seed: UInt64 = 1) -> String {
+    var rng = SplitMix64(seed: seed)
+    let words = ["alpha", "*beta*", "`gamma`", "d \\| e", "[ref]", "**f**", "ಕನ್ನಡ", "x", "", "~~s~~", "$m$", "<b>h</b>"]
+    func cell() -> String { words[Int(rng.next() % UInt64(words.count))] }
+    var out = "# Tables\n\nIntro [ref] paragraph.\n\n"
+    out += "| a | b | c |\n|:--|:-:|--:|\n"
+    for r in 0..<rows {
+        switch r % 7 {
+        case 3: out += "| \(cell()) | \(cell()) |\n"                          // short row
+        case 5: out += "\(cell()) | \(cell()) | \(cell()) | extra\n"          // no pipes at the ends, long row
+        default: out += "| \(cell()) | \(cell()) | \(cell()) |\n"
+        }
+    }
+    out += "\nBetween.\n\n| h1 | h2 |\n|----|----|\n"
+    for _ in 0..<(rows / 2) { out += "| \(cell()) | \(cell()) |\n" }
+    out += "\n[ref]: /target\n"
+    return out
+}
+
+/// A random edit inside a body row of a random top-level table (or anywhere,
+/// when the document has no table left).
+func tableRowEdit(_ rng: inout SplitMix64, index: BlockIndex, rope: LipiRope) -> Edit {
+    let tables = index.entries.indices.filter { if case .table = index.entries[$0].block.kind { return index.entries[$0].block.children.count > 1 } else { return false } }
+    guard !tables.isEmpty else { return randomEdit(&rng, in: rope) }
+    let i = tables[Int(rng.next() % UInt64(tables.count))]
+    let table = index.absoluteBlock(at: i)
+    let row = table.children[1 + Int(rng.next() % UInt64(table.children.count - 1))].range
+    let at = rope.floorScalarBoundary(row.lowerBound + Int(rng.next() % UInt64(row.count + 1)))
+    if rng.next() % 3 == 0 {
+        let end = rope.floorScalarBoundary(min(row.upperBound, at + Int(rng.next() % 6) + 1))
+        if end > at { return Edit(replacing: at..<end, with: "") }
+    }
+    // Mostly plain typing; sometimes a token that can change the row's shape.
+    let typed = ["a", "b", " ", "x", "é", "|", "\\", "`", "*"]
+    if rng.next() % 4 != 0 { return Edit(replacing: at..<at, with: typed[Int(rng.next() % UInt64(typed.count))]) }
+    return Edit(replacing: at..<at, with: editTokens[Int(rng.next() % UInt64(editTokens.count))])
+}
+
 struct RangeChecker {
     let bytes: [UInt8]
     var failures: [String] = []
@@ -266,6 +307,75 @@ struct ParserTests {
         var full2 = LipiParser(options: .editor)
         full2.parse(buffer.rope)
         #expect(parser.blocks.count == full2.blocks.count && zip(parser.blocks, full2.blocks).allSatisfy { $0.isStructurallyEqual(to: $1) })
+    }
+
+    @Test("typing in a table row re-parses only that row and keeps identities")
+    func tableRowLocality() {
+        let text = tableDocument(rows: 600)
+        var buffer = SourceBuffer(text)
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        let t = parser.index.entries.firstIndex { if case .table = $0.block.kind { return true } else { return false } }!
+        let before = parser.index.absoluteBlock(at: t)
+        let entryLength = parser.index.entries[t].length
+        let row = before.children[300]
+        let cell = row.children[0]
+        let delta = buffer.apply(.insert("typed ", at: SourceOffset(cell.range.lowerBound)))
+        parser.apply(delta, then: buffer.rope)
+        #expect(parser.stats.tableRowReparses == 1)
+        #expect(parser.stats.lastReparseEntries == 1)
+        #expect(parser.stats.lastReparseBytes < 200, "header, delimiter and one row, not \(entryLength) bytes")
+        let after = parser.index.absoluteBlock(at: t)
+        #expect(after.id == before.id, "the table keeps its identity")
+        #expect(after.children[299].id == before.children[299].id)
+        #expect(after.children[301].id == before.children[301].id)
+        #expect(after.children[300].id != row.id)
+        #expect(parser.index.entries[t].tableRowEdit == TableRowEdit(row: 300, lengthDelta: 6, baseRevision: 0))
+        #expect(parser.index.entries[t].revision == 1)
+        var full = LipiParser(options: .editor)
+        full.parse(buffer.rope)
+        #expect(parser.blocks.count == full.blocks.count && zip(parser.blocks, full.blocks).allSatisfy { $0.isStructurallyEqual(to: $1) })
+
+        // A newline, or a line that no longer continues the table, falls back to the region parse.
+        let rowNow = parser.index.absoluteBlock(at: t).children[10].range
+        let d2 = buffer.apply(Edit(replacing: rowNow, with: ""))
+        parser.apply(d2, then: buffer.rope)
+        #expect(parser.stats.tableRowReparses == 1)
+        #expect(parser.index.entries[t].tableRowEdit == nil)
+        let d3 = buffer.apply(.insert("\n", at: SourceOffset(parser.index.absoluteBlock(at: t).children[3].range.lowerBound + 1)))
+        parser.apply(d3, then: buffer.rope)
+        #expect(parser.stats.tableRowReparses == 1)
+        var full2 = LipiParser(options: .editor)
+        full2.parse(buffer.rope)
+        #expect(parser.blocks.count == full2.blocks.count && zip(parser.blocks, full2.blocks).allSatisfy { $0.isStructurallyEqual(to: $1) })
+    }
+
+    @Test("table row re-parse equals a full parse under random row edits", arguments: Array(1...8) as [UInt64])
+    func tableRowRandomEdits(seed: UInt64) {
+        var rng = SplitMix64(seed: seed)
+        var buffer = SourceBuffer(tableDocument(rows: 40, seed: seed))
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        for step in 0..<150 {
+            let edit = tableRowEdit(&rng, index: parser.index, rope: buffer.rope)
+            let delta = buffer.apply(edit)
+            parser.apply(delta, then: buffer.rope)
+            var full = LipiParser(options: .editor)
+            full.parse(buffer.rope)
+            let a = parser.blocks, b = full.blocks
+            let same = a.count == b.count && zip(a, b).allSatisfy { $0.isStructurallyEqual(to: $1) }
+            #expect(same, "seed \(seed) step \(step) edit \(edit)")
+            if !same {
+                if let d = zip(a, b).enumerated().first(where: { !$0.element.0.isStructurallyEqual(to: $0.element.1) }) {
+                    Issue.record("first difference at block \(d.offset):\n  incremental \(d.element.0)\n  full        \(d.element.1)")
+                }
+                break
+            }
+            var checker = RangeChecker(buffer.rope.string)
+            checker.check(parser)
+            #expect(checker.failures.isEmpty, Comment(rawValue: "seed \(seed) step \(step): " + checker.failures.prefix(4).joined(separator: "; ")))
+        }
+        #expect(parser.stats.tableRowReparses > 50, "most row edits take the row path (\(parser.stats.tableRowReparses))")
     }
 
     @Test("editing a reference definition re-parses the links that use it")

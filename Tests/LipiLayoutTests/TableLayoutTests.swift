@@ -49,33 +49,119 @@ struct TableLayoutTests {
         #expect(block.table?.rows == 600 && block.table?.columns == 6)
         let first = LayoutEngine.layout(block, typesetter: typesetter, measure: 640, wideWidth: 900)
         let table = first.table!
-        #expect(first.cells.count == 3600)
+        // Only the width sample is typeset up front.
+        #expect(table.rowsTypeset < 600 && table.realizedRowCount == table.rowsTypeset)
+        #expect(!table.isRealized(row: 300))
         #expect(table.width <= 900.5)
         #expect(table.height > 600 * 34 - 1)
         #expect(first.height == table.height + typesetter.scale.paragraphSpacing)
+        let target = table.cellIndex(row: 300, column: 0)
+        table.realizeRows(in: table.rowY(280)...table.rowY(320))
+        let widths = table.columnWidths
 
         // Type one character into the cell at row 300, column 0.
-        let cell = block.cells[block.table!.cellIndex(row: 300, column: 0)]
+        let cell = block.cells[target]
         let entryStart = doc.projection.entries[entryIndex].start
         let at = entryStart + block.sourceRange.lowerBound + cell.sourceRange.upperBound
         let result = doc.insert("x", at: at)
         #expect(result.changedEntries.contains(entryIndex))
         let edited = doc.block(entryIndex)
-        #expect(edited.cells[block.table!.cellIndex(row: 300, column: 0)].text.hasSuffix("x"))
+        #expect(edited.cells[target].text.hasSuffix("x"))
         let second = LayoutEngine.layout(edited, typesetter: typesetter, measure: 640, wideWidth: 900, previous: first, growOnly: true)
         let after = second.table!
-        // Unchanged cells keep their typeset keys and their line layouts.
-        var reused = 0
-        for i in 0..<3600 where i != block.table!.cellIndex(row: 300, column: 0) {
-            if after.cellKeys[i] == table.cellKeys[i] { reused += 1 }
-            if second.cells[i] === first.cells[i] { reused += 0 }
+        after.realizeRows(in: after.rowY(280)...after.rowY(320))
+        // Unchanged rows keep their line layouts; only the edited row is typeset.
+        #expect(after.rowsTypeset == 1)
+        for r in 281..<320 where r != 300 {
+            for c in 0..<6 {
+                let i = after.cellIndex(row: r, column: c)
+                #expect(second.cell(i) === first.cell(i), "row \(r) column \(c)")
+            }
         }
-        #expect(reused == 3599)
-        #expect(after.cellKeys[block.table!.cellIndex(row: 300, column: 0)] != table.cellKeys[block.table!.cellIndex(row: 300, column: 0)])
+        #expect(second.cell(target) !== first.cell(target))
+        #expect(second.cell(target).string.hasSuffix("x"))
         // Grow-only: no column shrank while the caret is inside.
-        for (a, b) in zip(table.columnWidths, after.columnWidths) { #expect(b >= a - 0.01) }
+        for (a, b) in zip(widths, after.columnWidths) { #expect(b >= a - 0.01) }
         #expect(after.rows == 600)
-        #expect(second.cells.filter { $0 !== first.cells[0] }.count <= 3600)
+    }
+
+    /// A 2,000-row table: short rows, except row 1,500 whose second cell is
+    /// a long wrapping paragraph (so its estimated height is wrong).
+    static let lazyTable: String = {
+        var s = "| Name | Value | Note |\n| --- | --- | --- |\n"
+        for i in 1...2000 {
+            let value = i == 1500 ? (0..<60).map { "word\($0)" }.joined(separator: " ") : "v\(i)"
+            s += "| r\(i) | \(value) | n |\n"
+        }
+        return s
+    }()
+
+    @Test func rowsOutsideTheViewportAreNotTypesetUntilNeeded() {
+        let doc = Doc(TableLayoutTests.lazyTable)
+        let layout = makeLayout(doc, width: 1200)
+        _ = layout.layoutIfNeeded(in: 0...800)
+        let table = layout.ensureLayout(0).blocks[0].table!
+        #expect(table.rows == 2001)
+        #expect(table.isRealized(row: 1) && table.isRealized(row: 20))
+        #expect(!table.isRealized(row: 1200) && !table.isMeasured(row: 1200))
+        #expect(table.realizedRowCount < 200)
+        // Asking for a caret there typesets that row (and only it).
+        let before = table.rowsTypeset
+        _ = layout.caretRect(at: DisplayPosition(entry: 0, block: 0, cell: table.cellIndex(row: 1200, column: 1), offset: 1))
+        #expect(table.isRealized(row: 1200) && table.isMeasured(row: 1200))
+        #expect(table.rowsTypeset == before + 1)
+        #expect(!table.isRealized(row: 1199))
+    }
+
+    @Test func caretAndHitTestInAnUnmeasuredRow() {
+        let doc = Doc(TableLayoutTests.lazyTable)
+        // Reference: every row measured.
+        let full = makeLayout(doc, width: 1200)
+        full.layoutAll()
+        let lazy = makeLayout(doc, width: 1200)
+        _ = lazy.layoutIfNeeded(in: 0...800)
+        let table = lazy.ensureLayout(0).blocks[0].table!
+        #expect(!table.isMeasured(row: 1500))
+        let estimated = table.rowHeight(1500)
+        let position = DisplayPosition(entry: 0, block: 0, cell: table.cellIndex(row: 1500, column: 1), offset: 200)
+        let rect = lazy.caretRect(at: position)
+        #expect(table.isMeasured(row: 1500))
+        #expect(table.rowHeight(1500) != estimated)
+        #expect(table.rowHeight(1500) > 34)
+        #expect(rect == full.caretRect(at: position))
+        #expect(lazy.contentHeight == lazy.y(ofEntry: 0) + lazy.height(ofEntry: 0) + lazy.bottomPadding)
+        #expect(lazy.height(ofEntry: 0) == lazy.ensureLayout(0).height)
+
+        // Hit test in a fresh layout that has not measured the row either.
+        let fresh = makeLayout(doc, width: 1200)
+        _ = fresh.layoutIfNeeded(in: 0...800)
+        #expect(!fresh.ensureLayout(0).blocks[0].table!.isMeasured(row: 1500))
+        let probe = CGPoint(x: rect.minX + 0.5, y: rect.midY)
+        #expect(fresh.position(at: probe) == position)
+        #expect(fresh.sourceOffset(at: probe) == doc.projection.sourceOffset(for: position))
+        #expect(fresh.caretRect(at: position) == rect)
+    }
+
+    @Test func columnWidthsDoNotShrinkWhenLaterRowsAreMeasured() {
+        let doc = Doc(TableLayoutTests.lazyTable)
+        let layout = makeLayout(doc, width: 1200)
+        _ = layout.layoutIfNeeded(in: 0...800)
+        let table = layout.ensureLayout(0).blocks[0].table!
+        let initial = table.columnWidths
+        var previous = initial
+        var y: CGFloat = 0
+        while y < layout.contentHeight {
+            _ = layout.layoutIfNeeded(in: y...(y + 800))
+            for (a, b) in zip(previous, table.columnWidths) { #expect(b >= a) }
+            previous = table.columnWidths
+            y += 800
+        }
+        for r in 0..<table.rows { #expect(table.isMeasured(row: r)) }
+        // Row 1,500 widened the second column into the free width.
+        #expect(table.columnWidths[1] > initial[1])
+        #expect(table.columnWidths[0] == initial[0] && table.columnWidths[2] == initial[2])
+        #expect(table.width <= layout.wideWidth + 0.5)
+        #expect(table.realizedRowCount <= table.realizedRowCap)
     }
 
     @Test func cellsAreIndividuallyAddressable() {

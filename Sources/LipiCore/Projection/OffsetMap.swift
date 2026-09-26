@@ -57,7 +57,7 @@ public struct MapSegment: Sendable, Hashable {
 public struct OffsetMap: Sendable, Hashable {
     public private(set) var segments: [MapSegment]
     /// Source bytes this map covers (local to the enclosing entry).
-    public let sourceRange: Range<Int>
+    public private(set) var sourceRange: Range<Int>
     /// UTF-16 length of the display text.
     public let displayLength: Int
     /// UTF-8 length of the display text.
@@ -68,6 +68,13 @@ public struct OffsetMap: Sendable, Hashable {
         self.sourceRange = sourceRange
         self.displayLength = displayLength
         self.displayLengthUTF8 = displayLengthUTF8
+    }
+
+    /// Moves the map's source side by `delta` bytes.
+    mutating func shift(by delta: Int) {
+        sourceRange = (sourceRange.lowerBound + delta)..<(sourceRange.upperBound + delta)
+        let d = Int32(delta)
+        for i in segments.indices { segments[i].sourceStart += d }
     }
 
     /// The identity map over `text`, for source mode and tests.

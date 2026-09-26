@@ -171,28 +171,365 @@ extension TypesetCell {
 
 // MARK: - Tables
 
-public struct TableLayout {
+/// Row-lazy layout of a table island (§6.3: row layout is virtualized).
+///
+/// Only a bounded sample of rows is typeset when the table is laid out: the
+/// header, the first rows and rows strided through the rest, which fix the
+/// column widths. Every other row gets an estimated height (one line per
+/// cell unless its text is longer than the column) and is typeset the first
+/// time it is drawn, hit-tested or asked for a caret, like the
+/// estimated-then-measured entries of `DocumentLayout`. A row measured
+/// wider than its column widens that column into the table's free width;
+/// columns never narrow within one layout, so the grid stays stable while
+/// scrolling. At most `realizedRowCap` rows keep their typeset cells; the
+/// least recently used are dropped (their measured heights stay).
+///
+/// Not thread-safe: a table layout mutates as rows are realized, on the
+/// thread that owns its `DocumentLayout`.
+public final class TableLayout {
     public let columns: Int
     public let rows: Int
-    public let columnWidths: [CGFloat]
-    public let rowHeights: [CGFloat]
-    public let cellKeys: [UInt64]
     public let paddingX: CGFloat
     public let paddingY: CGFloat
+    /// Column widths, padding included.
+    public private(set) var columnWidths: [CGFloat]
+    /// Rows this layout has typeset (not counting rows adopted from the
+    /// previous layout of the same table).
+    public private(set) var rowsTypeset = 0
+    /// Upper bound on rows holding typeset cells.
+    public let realizedRowCap: Int
 
-    public var width: CGFloat { columnWidths.reduce(0, +) }
-    public var height: CGFloat { rowHeights.reduce(0, +) }
-    public func columnX(_ c: Int) -> CGFloat { columnWidths.prefix(c).reduce(0, +) }
-    public func rowY(_ r: Int) -> CGFloat { rowHeights.prefix(r).reduce(0, +) }
+    struct Row {
+        let key: UInt64
+        var cells: [CellLayout]
+        /// Natural width of each cell, padding included, rounded up and capped.
+        let natural: [CGFloat]
+        var lastUse: UInt64
+    }
+
+    let block: DisplayBlock
+    let typesetter: Typesetter
+    /// Width available to the table.
+    let available: CGFloat
+    let maxColumn: CGFloat
+    private var offsets: [CGFloat]
+    private var heights: HeightTree
+    private var measured: [Bool]
+    private(set) var realized: [Int: Row] = [:]
+    /// Rows of the previous layout of this table, adopted when their key
+    /// still matches (typing in one row re-typesets only that row).
+    private let inherited: [Int: Row]
+    private var inheritedByKey: [UInt64: Row]? = nil
+    private let inheritedRowCount: Int
+    private var clock: UInt64 = 0
+    private lazy var advance: CGFloat =
+        typesetter.cascade.zeroAdvance(size: typesetter.scale.style(for: .tableCell).size) * 0.92
+
+    /// Rows typeset to fix the column widths: header, the first
+    /// `leadingSample`, and up to `stridedSample` spread through the rest.
+    static let leadingSample = 96
+    static let stridedSample = 32
+
+    init(block: DisplayBlock, typesetter: Typesetter, width: CGFloat, paddingX px: CGFloat, paddingY py: CGFloat,
+         previous: TableLayout?, growOnly: Bool) {
+        let shape = block.table!
+        columns = shape.columns
+        rows = shape.rows
+        paddingX = px
+        paddingY = py
+        self.block = block
+        self.typesetter = typesetter
+        available = width
+        let minColumn = (typesetter.scale.style(for: .tableCell).size * 3).rounded() + 2 * px
+        maxColumn = max(minColumn, width * 0.6)
+        realizedRowCap = max(128, 8192 / max(1, columns))
+        let columnCount = shape.columns
+        let compatible = previous.map { $0.columns == columnCount && $0.available == width && $0.paddingX == px && $0.paddingY == py } ?? false
+        inherited = compatible ? previous!.realized : [:]
+        inheritedRowCount = compatible ? previous!.rows : -1
+        heights = HeightTree()
+        measured = []
+        offsets = []
+
+        var sample: [Int: Row] = [:]
+        if compatible, growOnly, let previous {
+            // The caret is in the table: keep its columns.
+            columnWidths = previous.columnWidths
+        } else {
+            columnWidths = []
+            var wanted = [CGFloat](repeating: minColumn, count: columns)
+            for r in TableLayout.sampleRows(rows) {
+                let row = naturalRow(r)
+                for c in 0..<columns { wanted[c] = max(wanted[c], row.natural[c]) }
+                sample[r] = row
+            }
+            columnWidths = TableLayout.fit(wanted, into: width, minColumn: minColumn)
+        }
+        offsets = TableLayout.prefix(columnWidths)
+        if compatible, let previous, previous.rows == rows, previous.columnWidths == columnWidths {
+            heights = previous.heights
+            measured = previous.measured
+        } else {
+            heights = HeightTree(heights: (0..<rows).map { Double(estimate($0)) })
+            measured = [Bool](repeating: false, count: rows)
+        }
+        for (r, row) in sample.sorted(by: { $0.key < $1.key }) { install(row, at: r) }
+    }
+
+    // MARK: Geometry
+
+    public var width: CGFloat { offsets.last ?? 0 }
+    /// Current height: measured rows plus the estimates of the others.
+    public var height: CGFloat { CGFloat(heights.total) }
+    public func columnX(_ c: Int) -> CGFloat { offsets[min(max(c, 0), columns)] }
+    /// y of row `r`'s top; `rowY(rows)` is the table's height.
+    public func rowY(_ r: Int) -> CGFloat { CGFloat(heights.prefix(min(max(r, 0), rows))) }
+    public func rowHeight(_ r: Int) -> CGFloat { CGFloat(heights.height(at: r)) }
+    /// Every row's current height (estimates for rows not measured yet).
+    public var rowHeights: [CGFloat] { (0..<rows).map(rowHeight) }
+    /// The row whose span contains `y` (clamped), without typesetting it.
+    public func row(atY y: CGFloat) -> Int { heights.index(at: Double(y)) ?? 0 }
+    public func isMeasured(row r: Int) -> Bool { measured[r] }
+    public func isRealized(row r: Int) -> Bool { realized[r] != nil }
+    public var realizedRowCount: Int { realized.count }
     /// Row and column of cell `i` (cells are stored row-major).
     public func position(ofCell i: Int) -> (row: Int, column: Int) { (i / columns, i % columns) }
     public func cellIndex(row: Int, column: Int) -> Int { row * columns + column }
+
+    /// Frame of cell `i` relative to the table's top-left (padding
+    /// included). Typesets the cell's row if needed, so the frame is exact.
+    public func frame(ofCell i: Int) -> CGRect {
+        let (r, c) = position(ofCell: i)
+        realize(r)
+        return CGRect(x: offsets[c] + paddingX, y: rowY(r) + paddingY,
+                      width: columnWidths[c] - 2 * paddingX, height: rowHeight(r) - 2 * paddingY)
+    }
+
+    /// Cell `i`, typesetting its row if needed.
+    public func cell(_ i: Int) -> CellLayout {
+        let (r, c) = position(ofCell: i)
+        return realize(r).cells[c]
+    }
+
+    /// Typesets the rows intersecting `range` (table y) and returns them.
+    /// Rows are measured top-down, so each row's y is final before the next
+    /// is found; the rows above the range keep their heights.
+    @discardableResult
+    public func realizeRows(in range: ClosedRange<CGFloat>) -> Range<Int> {
+        guard rows > 0, range.upperBound >= 0, range.lowerBound <= height else { return 0..<0 }
+        let first = row(atY: range.lowerBound)
+        var r = first
+        while r < rows, rowY(r) <= range.upperBound {
+            realize(r)
+            r += 1
+        }
+        return first..<max(r, first + 1)
+    }
+
+    /// Measures every row (typesetting each once; only the most recent
+    /// `realizedRowCap` keep their cells).
+    public func measureAll() {
+        for r in 0..<rows where !measured[r] { realize(r) }
+    }
+
+    /// Cell index under `point` (table coordinates), else the nearest cell.
+    /// Rows are typeset on the way, so an estimated row that grows when
+    /// measured moves the answer to the row now under the point.
+    public func cellIndex(at point: CGPoint) -> Int {
+        guard rows > 0 else { return 0 }
+        var r = row(atY: point.y)
+        while true {
+            realize(r)
+            if r + 1 < rows, point.y >= rowY(r + 1) { r += 1 } else { break }
+        }
+        var c = 0
+        while c < columns - 1, point.x >= offsets[c + 1] { c += 1 }
+        return r * columns + c
+    }
+
+    // MARK: Rows
+
+    /// The row's cells, typeset at the column widths (typesetting them now
+    /// if needed).
+    @discardableResult
+    func realize(_ r: Int) -> Row {
+        clock += 1
+        if var row = realized[r] {
+            row.lastUse = clock
+            realized[r] = row
+            return row
+        }
+        let key = rowKey(r)
+        let row = adopt(r, key: key) ?? naturalRow(r, key: key)
+        install(row, at: r)
+        return realized[r]!
+    }
+
+    /// Places a row with natural widths: widens columns it overflows, wraps
+    /// its cells at the column widths and records its height.
+    private func install(_ source: Row, at r: Int) {
+        var row = source
+        clock += 1
+        row.lastUse = clock
+        let widened = widen(for: row.natural)
+        for c in 0..<columns { row.cells[c] = fitted(row.cells[c], column: c) }
+        realized[r] = row
+        record(r, row)
+        if !widened.isEmpty {
+            for (other, var o) in realized where other != r {
+                var changed = false
+                for c in widened where !fits(o.cells[c], column: c) {
+                    o.cells[c] = fitted(o.cells[c], column: c)
+                    changed = true
+                }
+                if changed { realized[other] = o; record(other, o) }
+            }
+        }
+        if realized.count > realizedRowCap { evict() }
+    }
+
+    private func record(_ r: Int, _ row: Row) {
+        var h: CGFloat = 0
+        for cell in row.cells { h = max(h, cell.height + 2 * paddingY) }
+        heights.update(r, height: Double(h))
+        measured[r] = true
+    }
+
+    /// A row of the previous layout with the same content, if any.
+    private func adopt(_ r: Int, key: UInt64) -> Row? {
+        if let row = inherited[r], row.key == key { return row }
+        guard inheritedRowCount != rows, !inherited.isEmpty else { return nil }
+        if inheritedByKey == nil {
+            var byKey: [UInt64: Row] = [:]
+            for row in inherited.values { byKey[row.key] = row }
+            inheritedByKey = byKey
+        }
+        return inheritedByKey![key]
+    }
+
+    /// Typesets row `r` at unbounded width.
+    private func naturalRow(_ r: Int, key: UInt64? = nil) -> Row {
+        var cells: [CellLayout] = []
+        var natural: [CGFloat] = []
+        cells.reserveCapacity(columns)
+        natural.reserveCapacity(columns)
+        for c in 0..<columns {
+            let i = r * columns + c
+            let cell = LayoutEngine.typeset(typesetter.typeset(block.cells[i], in: block, cellIndex: i), width: .infinity)
+            cells.append(cell)
+            natural.append(min(maxColumn, (cell.usedWidth + 2 * paddingX).rounded(.up)))
+        }
+        rowsTypeset += 1
+        return Row(key: key ?? rowKey(r), cells: cells, natural: natural, lastUse: 0)
+    }
+
+    /// Hash of the row's cell keys (text, runs, role and alignment).
+    func rowKey(_ r: Int) -> UInt64 {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for c in 0..<columns {
+            let i = r * columns + c
+            h = (h ^ typesetter.key(for: block.cells[i], in: block, cellIndex: i)) &* 0x0000_0100_0000_01B3
+        }
+        return h
+    }
+
+    /// Whether `cell` is laid out correctly for column `c`: typeset at the
+    /// column's inner width, or an unbounded single left-aligned line that
+    /// fits it.
+    private func fits(_ cell: CellLayout, column c: Int) -> Bool {
+        let inner = columnWidths[c] - 2 * paddingX
+        if cell.width == inner { return true }
+        return cell.width.isInfinite && cell.isSingleLine && cell.usedWidth <= inner && cell.typeset.flushFactor == 0
+    }
+
+    private func fitted(_ cell: CellLayout, column c: Int) -> CellLayout {
+        fits(cell, column: c) ? cell : LayoutEngine.typeset(cell.typeset, width: columnWidths[c] - 2 * paddingX)
+    }
+
+    /// Grows the columns `natural` overflows into the table's free width
+    /// (never past `available`, never narrowing). Returns the columns widened.
+    private func widen(for natural: [CGFloat]) -> [Int] {
+        var slack = available - (offsets.last ?? 0)
+        guard slack >= 1 else { return [] }
+        var widened: [Int] = []
+        for c in 0..<columns where natural[c] > columnWidths[c] {
+            let grow = min(natural[c] - columnWidths[c], slack).rounded(.down)
+            guard grow >= 1 else { continue }
+            columnWidths[c] += grow
+            slack -= grow
+            widened.append(c)
+        }
+        if !widened.isEmpty { offsets = TableLayout.prefix(columnWidths) }
+        return widened
+    }
+
+    /// Drops the typeset cells of the least recently used rows.
+    private func evict() {
+        let order = realized.sorted { $0.value.lastUse < $1.value.lastUse }
+        let target = realizedRowCap * 3 / 4
+        for (r, _) in order.prefix(max(0, realized.count - target)) { realized[r] = nil }
+    }
+
+    /// Height guess for an unmeasured row: one line per cell unless its text
+    /// is longer than the column (exact for single-line rows).
+    private func estimate(_ r: Int) -> CGFloat {
+        let lineHeight = typesetter.scale.style(for: r == 0 ? .tableHeader : .tableCell).lineHeight
+        var lines: CGFloat = 1
+        for c in 0..<columns {
+            let n = block.cells[r * columns + c].text.utf16.count
+            let inner = max(1, columnWidths[c] - 2 * paddingX)
+            lines = max(lines, (CGFloat(n) * advance / inner).rounded(.up))
+        }
+        return lines * lineHeight + 2 * paddingY
+    }
+
+    static func sampleRows(_ rows: Int) -> [Int] {
+        let leading = min(rows, 1 + leadingSample)
+        var result = Array(0..<leading)
+        let rest = rows - leading
+        if rest > 0 {
+            let count = min(rest, stridedSample)
+            for k in 0..<count { result.append(leading + (k * rest + rest / 2) / count) }
+        }
+        return result
+    }
+
+    /// Natural widths shrunk to fit `width`: the columns above their fair
+    /// share lose width proportionally, then everything scales down.
+    static func fit(_ wanted: [CGFloat], into width: CGFloat, minColumn: CGFloat) -> [CGFloat] {
+        var widths = wanted
+        let columns = widths.count
+        let total = widths.reduce(0, +)
+        guard total > width, columns > 0 else { return widths }
+        let fair = width / CGFloat(columns)
+        let excess = total - width
+        let shrinkable = widths.reduce(0) { $0 + max(0, $1 - fair) }
+        if shrinkable > 0 {
+            let ratio = min(1, excess / shrinkable)
+            for c in 0..<columns where widths[c] > fair { widths[c] -= (widths[c] - fair) * ratio }
+        }
+        if widths.reduce(0, +) > width {
+            let scaleDown = width / widths.reduce(0, +)
+            for c in 0..<columns { widths[c] = max(minColumn, widths[c] * scaleDown) }
+        }
+        for c in 0..<columns { widths[c] = widths[c].rounded(.down) }
+        return widths
+    }
+
+    static func prefix(_ widths: [CGFloat]) -> [CGFloat] {
+        var result: [CGFloat] = [0]
+        result.reserveCapacity(widths.count + 1)
+        for w in widths { result.append(result.last! + w) }
+        return result
+    }
 }
 
 // MARK: - Blocks
 
 /// One display block laid out at one width. Produced by `LayoutEngine` and
-/// held by `LayoutCache`; immutable once built.
+/// held by `LayoutCache`. Paragraph-like blocks are immutable once built; a
+/// table typesets its rows lazily (`TableLayout`), so its height and the
+/// lines it holds grow as rows are measured.
 public final class BlockLayout {
     public let id: NodeID
     public let layoutKey: UInt64
@@ -204,13 +541,22 @@ public final class BlockLayout {
     public let width: CGFloat
     /// Leading indent from the text column (quote and list nesting).
     public let indent: CGFloat
-    public let cells: [CellLayout]
-    /// Frame of each cell relative to the block's top-left (padding included).
-    public let cellFrames: [CGRect]
     public let table: TableLayout?
+    private let storedCells: [CellLayout]
+    private let storedFrames: [CGRect]
+    private let storedHeight: CGFloat
+    /// Space below a table's grid, inside the block's box.
+    private let tableSpacing: CGFloat
+
     /// Height of the block's own box (padding included, spacing excluded).
-    public let height: CGFloat
-    public var lineCount: Int { cells.reduce(0) { $0 + $1.lines.count } }
+    /// For a table it includes the estimates of rows not measured yet.
+    public var height: CGFloat { table.map { $0.height + tableSpacing } ?? storedHeight }
+    public var cellCount: Int { table.map { $0.rows * $0.columns } ?? storedCells.count }
+    /// Lines typeset so far (a table counts only its realized rows).
+    public var lineCount: Int {
+        guard let table else { return storedCells.reduce(0) { $0 + $1.lines.count } }
+        return table.realized.values.reduce(0) { sum, row in sum + row.cells.reduce(0) { $0 + $1.lines.count } }
+    }
     public var spacingBefore: CGFloat { style.spacingBefore }
     public var spacingAfter: CGFloat { style.spacingAfter }
     public var isThematicBreak: Bool { if case .thematicBreak = role { return true } else { return false } }
@@ -222,7 +568,8 @@ public final class BlockLayout {
     }
 
     init(id: NodeID, layoutKey: UInt64, role: BlockRole, style: TextStyle, context: BlockContext, isRevealed: Bool,
-         width: CGFloat, indent: CGFloat, cells: [CellLayout], cellFrames: [CGRect], table: TableLayout?, height: CGFloat) {
+         width: CGFloat, indent: CGFloat, cells: [CellLayout], cellFrames: [CGRect], table: TableLayout?, height: CGFloat,
+         tableSpacing: CGFloat = 0) {
         self.id = id
         self.layoutKey = layoutKey
         self.role = role
@@ -231,23 +578,30 @@ public final class BlockLayout {
         self.isRevealed = isRevealed
         self.width = width
         self.indent = indent
-        self.cells = cells
-        self.cellFrames = cellFrames
+        self.storedCells = cells
+        self.storedFrames = cellFrames
         self.table = table
-        self.height = height
+        self.storedHeight = height
+        self.tableSpacing = tableSpacing
     }
 
+    /// Cell `i`; a table typesets the cell's row if it is not yet.
+    public func cell(_ i: Int) -> CellLayout { table?.cell(i) ?? storedCells[i] }
+
+    /// Frame of cell `i` relative to the block's top-left (padding included).
+    public func cellFrame(_ i: Int) -> CGRect { table?.frame(ofCell: i) ?? storedFrames[i] }
+
+    /// Every cell. For a table this typesets every row: use `cell(_:)` or
+    /// `TableLayout.realizeRows(in:)` outside tests.
+    public var cells: [CellLayout] { (0..<cellCount).map(cell) }
+    /// Every cell frame (typesets every row of a table, like `cells`).
+    public var cellFrames: [CGRect] { (0..<cellCount).map(cellFrame) }
+
     /// Index of the cell whose frame contains `point` (block coordinates),
-    /// else the nearest cell.
+    /// else the nearest cell. A table typesets the rows it walks through.
     public func cellIndex(at point: CGPoint) -> Int {
-        guard cells.count > 1, let table else { return 0 }
-        var row = 0
-        var y = cellFrames[0].minY
-        while row < table.rows - 1, point.y >= y + table.rowHeights[row] { y += table.rowHeights[row]; row += 1 }
-        var column = 0
-        var x = cellFrames[0].minX
-        while column < table.columns - 1, point.x >= x + table.columnWidths[column] { x += table.columnWidths[column]; column += 1 }
-        return row * table.columns + column
+        guard let table, cellCount > 1 else { return 0 }
+        return table.cellIndex(at: point)
     }
 }
 
@@ -289,111 +643,18 @@ extension LayoutEngine {
                            table: nil, height: height)
     }
 
-    /// Table island: natural column widths, shrunk proportionally to fit,
-    /// never shrunk while `growOnly` (the caret is inside). With `previous`,
-    /// only cells whose typeset key changed are measured again, and only the
-    /// columns whose width changed are re-wrapped.
+    /// Table island: column widths from the natural widths of a sample of
+    /// rows, shrunk proportionally to fit, never shrunk while `growOnly`
+    /// (the caret is inside). Rows outside the sample are typeset on demand
+    /// (`TableLayout`). With `previous`, rows whose content did not change
+    /// reuse their typeset cells.
     static func layoutTable(_ block: DisplayBlock, typesetter: Typesetter, width: CGFloat, indent: CGFloat, style: TextStyle,
                             previous: BlockLayout?, growOnly: Bool) -> BlockLayout {
-        let shape = block.table!
-        let columns = shape.columns
-        let rows = shape.rows
-        let scale = typesetter.scale
-        let px = style.paddingX
-        let py = style.paddingY
-        let minColumn = (scale.style(for: .tableCell).size * 3).rounded() + 2 * px
-        let maxColumn = max(minColumn, width * 0.6)
-
-        // Typeset the cells whose key changed and measure them at unbounded
-        // width to learn their natural width; the others keep their layout.
-        // Keys are computed without typesetting, so an edit in one cell of a
-        // 600 × 6 table hashes 3,600 short strings and typesets one.
-        let prev = previous?.table
-        let prevCells = previous?.cells ?? []
-        let canReuse = prev != nil && prev!.columns == columns && prev!.rows == rows && prevCells.count == columns * rows
-        var natural: [CellLayout?] = Array(repeating: nil, count: columns * rows)
-        var changed = [Bool](repeating: !canReuse, count: columns * rows)
-        for i in 0..<(columns * rows) {
-            if canReuse, prev!.cellKeys[i] == typesetter.key(for: block.cells[i], in: block, cellIndex: i) {
-                natural[i] = prevCells[i]
-            } else {
-                changed[i] = true
-                natural[i] = typeset(typesetter.typeset(block.cells[i], in: block, cellIndex: i), width: .infinity)
-            }
-        }
-        // Natural column widths. Reused cells contribute their laid-out width
-        // when they were single-line, else the previous column width.
-        var wanted = [CGFloat](repeating: minColumn, count: columns)
-        for i in 0..<(columns * rows) {
-            let c = i % columns
-            let cell = natural[i]!
-            let w: CGFloat
-            if changed[i] || cell.isSingleLine {
-                w = cell.usedWidth + 2 * px
-            } else {
-                w = prev!.columnWidths[c]
-            }
-            wanted[c] = max(wanted[c], min(maxColumn, w.rounded(.up)))
-        }
-        if growOnly, let prev, prev.columns == columns {
-            for c in 0..<columns { wanted[c] = max(wanted[c], prev.columnWidths[c]) }
-        }
-        var widths = wanted
-        let total = widths.reduce(0, +)
-        if total > width {
-            // Shrink the columns above their fair share, proportionally.
-            let fair = width / CGFloat(columns)
-            let excess = total - width
-            let shrinkable = widths.reduce(0) { $0 + max(0, $1 - fair) }
-            if shrinkable > 0 {
-                let ratio = min(1, excess / shrinkable)
-                for c in 0..<columns where widths[c] > fair { widths[c] -= (widths[c] - fair) * ratio }
-            }
-            if widths.reduce(0, +) > width {
-                let scaleDown = width / widths.reduce(0, +)
-                for c in 0..<columns { widths[c] = max(minColumn, widths[c] * scaleDown) }
-            }
-            for c in 0..<columns { widths[c] = widths[c].rounded(.down) }
-        }
-        // Wrap the cells that do not fit on one line in their column.
-        var cells: [CellLayout] = []
-        cells.reserveCapacity(columns * rows)
-        for i in 0..<(columns * rows) {
-            let c = i % columns
-            let inner = widths[c] - 2 * px
-            let cell = natural[i]!
-            let columnChanged = prev.map { $0.columnWidths[c] != widths[c] } ?? true
-            if !changed[i], !columnChanged {
-                cells.append(cell)
-            } else if cell.isSingleLine, cell.usedWidth <= inner, cell.typeset.flushFactor == 0 {
-                // Natural layouts were measured unbounded, so they only stand
-                // in for left-aligned cells; centred and right-aligned ones
-                // are placed again at the column width.
-                cells.append(cell)
-            } else {
-                cells.append(typeset(cell.typeset, width: inner))
-            }
-        }
-        var rowHeights = [CGFloat](repeating: 0, count: rows)
-        for i in 0..<(columns * rows) {
-            rowHeights[i / columns] = max(rowHeights[i / columns], cells[i].height + 2 * py)
-        }
-        var frames: [CGRect] = []
-        frames.reserveCapacity(columns * rows)
-        var y: CGFloat = 0
-        for r in 0..<rows {
-            var x: CGFloat = 0
-            for c in 0..<columns {
-                frames.append(CGRect(x: x + px, y: y + py, width: widths[c] - 2 * px, height: rowHeights[r] - 2 * py))
-                x += widths[c]
-            }
-            y += rowHeights[r]
-        }
-        let table = TableLayout(columns: columns, rows: rows, columnWidths: widths, rowHeights: rowHeights,
-                                cellKeys: natural.map { $0!.typeset.key }, paddingX: px, paddingY: py)
+        let table = TableLayout(block: block, typesetter: typesetter, width: width, paddingX: style.paddingX, paddingY: style.paddingY,
+                                previous: previous?.table, growOnly: growOnly)
         return BlockLayout(id: block.id, layoutKey: block.layoutKey, role: block.role, style: style, context: block.context,
-                           isRevealed: block.isRevealed, width: width, indent: indent, cells: cells, cellFrames: frames,
-                           table: table, height: y + scale.paragraphSpacing)
+                           isRevealed: block.isRevealed, width: width, indent: indent, cells: [], cellFrames: [],
+                           table: table, height: 0, tableSpacing: typesetter.scale.paragraphSpacing)
     }
 
     /// Height guess for a block that has not been laid out (§7.4 step 7:

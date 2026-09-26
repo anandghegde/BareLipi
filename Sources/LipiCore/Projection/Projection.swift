@@ -16,6 +16,12 @@ public struct ProjectedEntry: Sendable {
     var revealKey: Int
     /// Display blocks in order; their source ranges tile `0..<length`.
     public var blocks: [DisplayBlock]
+    /// `BlockEntry.revision` the blocks were built from.
+    var revision: UInt32 = 0
+    /// Table rows whose projection depends on the reveal set (a revealed
+    /// inline or escape); only kept for a table entry with a non-trivial
+    /// reveal key.
+    var revealedRows: [Int] = []
 }
 
 public struct Projection: Sendable {
@@ -28,6 +34,9 @@ public struct Projection: Sendable {
     public struct UpdateResult: Sendable, Equatable {
         public var rebuilt = 0
         public var reused = 0
+        /// Entries brought up to date by re-projecting single table rows
+        /// (also counted in `rebuilt`).
+        public var rowPatched = 0
         /// Indices of entries whose display blocks changed.
         public var changedEntries: [Int] = []
 
@@ -59,14 +68,31 @@ public struct Projection: Sendable {
             let entry = index.entries[i]
             let start = index.start(of: i)
             let key = revealKey(for: entry.block.id, reveal: reveal)
-            if !entry.isDirty, var kept = old[entry.block.id], kept.length == entry.length, kept.revealKey == key {
+            if !entry.isDirty, var kept = old[entry.block.id], kept.length == entry.length, kept.revealKey == key,
+               kept.revision == entry.revision {
                 kept.start = start
                 new.append(kept)
                 result.reused += 1
                 continue
             }
+            if !entry.isDirty, let edit = entry.tableRowEdit, let prior = old[entry.block.id],
+               prior.revision == edit.baseRevision, prior.length + edit.lengthDelta == entry.length,
+               var patched = patchTableRows(entry: entry, prior: prior, edit: edit, start: start, key: key,
+                                            rope: rope, reveal: reveal) {
+                patched.start = start
+                new.append(patched)
+                result.changedEntries.append(new.count - 1)
+                result.rebuilt += 1
+                result.rowPatched += 1
+                continue
+            }
             let blocks = build(entry: entry, start: start, rope: rope, reveal: reveal)
-            new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks))
+            var rows: [Int] = []
+            if Self.isCaretKey(key), case .table = entry.block.kind {
+                rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
+            }
+            new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks,
+                                      revision: entry.revision, revealedRows: rows))
             result.changedEntries.append(new.count - 1)
             result.rebuilt += 1
         }
@@ -91,6 +117,9 @@ public struct Projection: Sendable {
         return result
     }
 
+    /// A reveal key that stands for a caret's reveal set (not "nothing" or "everything").
+    private static func isCaretKey(_ key: Int) -> Bool { key != 0 && key != 1 }
+
     private func revealKey(for id: NodeID, reveal: RevealSet) -> Int {
         if reveal.all { return 1 }
         guard reveal.entry == id, !reveal.isEmpty else { return 0 }
@@ -105,6 +134,59 @@ public struct Projection: Sendable {
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
             return projector.project(entry.block, spanLength: entry.length)
         }
+    }
+
+    /// Brings a table entry's previous projection up to date after the
+    /// parser replaced one row in place (`BlockEntry.tableRowEdit`): the
+    /// edited row and any row whose reveal state changed are re-projected,
+    /// the cells after the edited row move by the edit's length delta, and
+    /// every other cell is reused. Nil when the patch does not apply (the
+    /// caller rebuilds the entry).
+    private func patchTableRows(entry: BlockEntry, prior: ProjectedEntry, edit: TableRowEdit, start: Int, key: Int,
+                                rope: LipiRope, reveal: RevealSet) -> ProjectedEntry? {
+        guard prior.blocks.count == 1, prior.blocks[0].table != nil, case .table = entry.block.kind,
+              !Self.isCaretKey(key) || reveal.blocks.isEmpty else { return nil }
+        if key != prior.revealKey && (key == 1 || prior.revealKey == 1) { return nil }
+        var rows: Set<Int> = [edit.row]
+        var newRevealed: [Int] = []
+        if key != prior.revealKey || Self.isCaretKey(key) {
+            // Rows revealed before or now must be re-projected too.
+            rows.formUnion(prior.revealedRows)
+            if Self.isCaretKey(key) {
+                newRevealed = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
+                rows.formUnion(newRevealed)
+            }
+        }
+        var text = rope.string(in: start..<(start + entry.length))
+        let block: DisplayBlock? = text.withUTF8 { bytes in
+            var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
+            return projector.patchTable(entry.block, old: prior.blocks[0], rows: rows.sorted(), editedRow: edit.row,
+                                        lengthDelta: edit.lengthDelta, spanLength: entry.length)
+        }
+        guard let block else { return nil }
+        return ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: [block],
+                              revision: entry.revision, revealedRows: newRevealed)
+    }
+
+    /// Rows of top-level `table` holding an inline or escape that `reveal` shows raw.
+    static func revealedRows(of table: Block, reveal: RevealSet, entryStart: Int) -> [Int] {
+        if reveal.inlines.isEmpty && reveal.expandedLinks.isEmpty && reveal.escapes.isEmpty { return [] }
+        var out: [Int] = []
+        for (r, row) in table.children.enumerated() {
+            let lo = entryStart + row.range.lowerBound, hi = entryStart + row.range.upperBound
+            var hit = reveal.escapes.contains { $0 >= lo && $0 <= hi }
+            if !hit {
+                for cell in row.children where !hit {
+                    for inline in cell.inlines where !hit {
+                        inline.forEachInline { i in
+                            if reveal.inlines.contains(i.id) || reveal.expandedLinks.contains(i.id) { hit = true }
+                        }
+                    }
+                }
+            }
+            if hit { out.append(r) }
+        }
+        return out
     }
 
     // MARK: Lookup
@@ -458,25 +540,7 @@ struct EntryProjector {
         for row in block.children {
             guard case .tableRow = row.kind else { continue }
             rows += 1
-            var rowCells = row.children.filter { if case .tableCell = $0.kind { return true } else { return false } }
-            if rowCells.count > columns { rowCells.removeLast(rowCells.count - columns) }
-            let rowEnd = max(row.range.upperBound, rowCells.last?.range.upperBound ?? row.range.upperBound)
-            for column in 0..<columns {
-                var builder = CellBuilder(bytes: bytes, start: cursor)
-                if column < rowCells.count {
-                    let cell = rowCells[column]
-                    emitPrefix(&builder, upTo: cell.range.lowerBound, revealed: revealed)
-                    emitInlines(cell.inlines, &builder, style: [])
-                    let cellEnd = max(cell.range.upperBound, builder.cursor)
-                    cells.append(builder.finish(end: cellEnd, resolve: .before))
-                    cursor = cellEnd
-                } else {
-                    // A short row: the padded cell sits at the row end.
-                    builder.hide(cursor..<rowEnd, .after)
-                    cells.append(builder.finish(end: rowEnd, resolve: .after))
-                    cursor = rowEnd
-                }
-            }
+            emitTableRow(row, columns: columns, revealed: revealed, into: &cells)
         }
         let end = max(block.range.upperBound, cursor)
         if cells.isEmpty {
@@ -484,15 +548,82 @@ struct EntryProjector {
             cells.append(builder.finish(end: end, resolve: .after))
             rows = 1
         } else if cursor < end {
-            var last = cells.removeLast()
-            var builder = CellBuilder(bytes: bytes, resuming: last)
-            last = builder.finish(end: end, resolve: .before)
-            cells.append(last)
+            extendLastCell(&cells, to: end)
         }
         cursor = end
         blocks.append(DisplayBlock(id: block.id, sourceRange: blockStart..<end, role: .table, context: context,
                                    isRevealed: revealed, cells: cells,
                                    table: TableShape(alignments: alignments, columns: columns, rows: rows)))
+    }
+
+    /// Emits one table row's cells, starting at `cursor`.
+    private mutating func emitTableRow(_ row: Block, columns: Int, revealed: Bool, into cells: inout [DisplayCell]) {
+        var rowCells = row.children.filter { if case .tableCell = $0.kind { return true } else { return false } }
+        if rowCells.count > columns { rowCells.removeLast(rowCells.count - columns) }
+        let rowEnd = max(row.range.upperBound, rowCells.last?.range.upperBound ?? row.range.upperBound)
+        for column in 0..<columns {
+            var builder = CellBuilder(bytes: bytes, start: cursor)
+            if column < rowCells.count {
+                let cell = rowCells[column]
+                emitPrefix(&builder, upTo: cell.range.lowerBound, revealed: revealed)
+                emitInlines(cell.inlines, &builder, style: [])
+                let cellEnd = max(cell.range.upperBound, builder.cursor)
+                cells.append(builder.finish(end: cellEnd, resolve: .before))
+                cursor = cellEnd
+            } else {
+                // A short row: the padded cell sits at the row end.
+                builder.hide(cursor..<rowEnd, .after)
+                cells.append(builder.finish(end: rowEnd, resolve: .after))
+                cursor = rowEnd
+            }
+        }
+    }
+
+    private func extendLastCell(_ cells: inout [DisplayCell], to end: Int) {
+        var last = cells.removeLast()
+        var builder = CellBuilder(bytes: bytes, resuming: last)
+        last = builder.finish(end: end, resolve: .before)
+        cells.append(last)
+    }
+
+    /// `old`, the projection of a top-level table before one of its rows was
+    /// re-parsed, updated to `table`: cells after `editedRow` move by
+    /// `lengthDelta` and `rows` are re-projected. Produces exactly what
+    /// `project(table, spanLength:)` would; nil when a re-projected row does
+    /// not end where the next row starts (the caller rebuilds).
+    mutating func patchTable(_ table: Block, old: DisplayBlock, rows: [Int], editedRow: Int, lengthDelta: Int,
+                             spanLength: Int) -> DisplayBlock? {
+        guard case .table(let alignments) = table.kind, let shape = old.table,
+              shape.rows == table.children.count, shape.columns == max(alignments.count, 1),
+              shape.alignments == alignments, old.cells.count == shape.rows * shape.columns,
+              table.children.allSatisfy({ if case .tableRow = $0.kind { return true } else { return false } })
+        else { return nil }
+        let columns = shape.columns
+        var cells = old.cells
+        if lengthDelta != 0 {
+            for c in ((editedRow + 1) * columns)..<cells.count { cells[c].shift(by: lengthDelta) }
+        }
+        let lastRow = shape.rows - 1
+        for r in rows where r >= 0 && r <= lastRow {
+            let first = r * columns
+            cursor = cells[first].sourceRange.lowerBound
+            var rowCells: [DisplayCell] = []
+            rowCells.reserveCapacity(columns)
+            emitTableRow(table.children[r], columns: columns, revealed: false, into: &rowCells)
+            if r < lastRow {
+                guard cursor == cells[first + columns].sourceRange.lowerBound else { return nil }
+            } else {
+                let end = max(table.range.upperBound, cursor)
+                if cursor < end { extendLastCell(&rowCells, to: end) }
+                cursor = end
+                if cursor < spanLength { extendLastCell(&rowCells, to: spanLength) }
+            }
+            cells.replaceSubrange(first..<(first + columns), with: rowCells)
+        }
+        guard cells[cells.count - 1].sourceRange.upperBound == spanLength else { return nil }
+        guard old.rowKeys.count == shape.rows else { return nil }
+        return DisplayBlock(table: old, sourceRange: old.sourceRange.lowerBound..<spanLength, cells: cells,
+                            changedRows: rows.filter { $0 >= 0 && $0 <= lastRow })
     }
 
     // MARK: Inlines

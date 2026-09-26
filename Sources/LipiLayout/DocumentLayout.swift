@@ -3,18 +3,42 @@ import Foundation
 import LipiCore
 
 /// The layout of one projected entry: its blocks stacked with their spacing.
+/// A table block grows as its rows are measured (`TableLayout`), so the
+/// tops and the height are refreshed by `DocumentLayout` when that happens.
 public final class EntryLayout {
     public let id: NodeID
     public let blocks: [BlockLayout]
     /// y of each block's box within the entry (spacing before applied).
-    public let blockTops: [CGFloat]
-    public let height: CGFloat
+    public private(set) var blockTops: [CGFloat]
+    public private(set) var height: CGFloat
+    /// Whether the first block takes its spacing before (every entry but the first).
+    let spacesFirstBlock: Bool
+    let hasTable: Bool
 
-    init(id: NodeID, blocks: [BlockLayout], blockTops: [CGFloat], height: CGFloat) {
+    init(id: NodeID, blocks: [BlockLayout], spacesFirstBlock: Bool) {
         self.id = id
         self.blocks = blocks
-        self.blockTops = blockTops
-        self.height = height
+        self.spacesFirstBlock = spacesFirstBlock
+        hasTable = blocks.contains { $0.table != nil }
+        blockTops = []
+        height = 0
+        _ = refresh()
+    }
+
+    /// Recomputes the block tops and the height from the blocks' current
+    /// heights; returns whether the height changed.
+    func refresh() -> Bool {
+        var tops: [CGFloat] = []
+        tops.reserveCapacity(blocks.count)
+        var y: CGFloat = 0
+        for (b, block) in blocks.enumerated() {
+            if spacesFirstBlock || b > 0 { y += block.spacingBefore }
+            tops.append(y)
+            y += block.height + block.spacingAfter
+        }
+        blockTops = tops
+        defer { height = y }
+        return y != height
     }
 
     /// Index of the block containing local `y` (clamped).
@@ -186,9 +210,7 @@ public final class DocumentLayout {
         let entry = projection.entries[i]
         let previous = stale.removeValue(forKey: i)
         var blocks: [BlockLayout] = []
-        var tops: [CGFloat] = []
         blocks.reserveCapacity(entry.blocks.count)
-        var y: CGFloat = 0
         for (b, block) in entry.blocks.enumerated() {
             let isWide: Bool = {
                 switch block.role {
@@ -211,14 +233,11 @@ public final class DocumentLayout {
                 cache.insert(layout, for: key)
                 stats.blocksLaidOut += 1
             }
-            if i > 0 || b > 0 { y += layout.spacingBefore }
-            tops.append(y)
-            y += layout.height + layout.spacingAfter
             blocks.append(layout)
         }
-        let layout = EntryLayout(id: entry.id, blocks: blocks, blockTops: tops, height: y)
+        let layout = EntryLayout(id: entry.id, blocks: blocks, spacesFirstBlock: i > 0)
         layouts[i] = layout
-        tree.update(i, height: Double(y))
+        tree.update(i, height: Double(layout.height))
         stats.entriesLaidOut += 1
         return layout
     }
@@ -233,15 +252,38 @@ public final class DocumentLayout {
             let y = CGFloat(tree.y(of: i))
             if y > range.upperBound { break }
             let layout = ensureLayout(i)
+            if layout.hasTable {
+                // Measure the table rows on screen; the ones above keep
+                // their heights, so the entry's top does not move.
+                for (b, block) in layout.blocks.enumerated() {
+                    guard let table = block.table else { continue }
+                    let top = y + layout.blockTops[b]
+                    table.realizeRows(in: (range.lowerBound - top)...(range.upperBound - top))
+                    sync(i, layout)
+                }
+            }
             result.append(PlacedEntry(index: i, y: y, layout: layout))
             i += 1
         }
         return result
     }
 
-    /// Lays out the whole document (benchmarks, scroll-to-end measurement).
+    /// Lays out the whole document and measures every table row
+    /// (benchmarks, scroll-to-end measurement).
     public func layoutAll() {
-        for i in 0..<tree.count { ensureLayout(i) }
+        for i in 0..<tree.count {
+            let layout = ensureLayout(i)
+            guard layout.hasTable else { continue }
+            for block in layout.blocks { block.table?.measureAll() }
+            sync(i, layout)
+        }
+    }
+
+    /// Carries height changes of an entry's tables (rows measured on
+    /// demand) into the height tree.
+    private func sync(_ i: Int, _ layout: EntryLayout) {
+        guard layout.hasTable, layout.refresh() else { return }
+        tree.update(i, height: Double(layout.height))
     }
 
     /// Placed layout of one entry.
@@ -254,18 +296,23 @@ public final class DocumentLayout {
     /// Document x of a block's leading edge.
     public func x(of block: BlockLayout) -> CGFloat { textOrigin + block.indent }
 
-    /// Frame of the cell at `position` in document coordinates.
+    /// Frame of the cell at `position` in document coordinates. A table
+    /// row that is not typeset yet is typeset first, so the frame is exact.
     public func cellFrame(at position: DisplayPosition) -> CGRect {
         let entry = ensureLayout(position.entry)
         let block = entry.blocks[position.block]
-        var frame = block.cellFrames[position.cell]
+        var frame = block.cellFrame(position.cell)
+        sync(position.entry, entry)
         frame.origin.x += x(of: block)
         frame.origin.y += CGFloat(tree.y(of: position.entry)) + entry.blockTops[position.block]
         return frame
     }
 
     public func cell(at position: DisplayPosition) -> CellLayout {
-        ensureLayout(position.entry).blocks[position.block].cells[position.cell]
+        let entry = ensureLayout(position.entry)
+        let cell = entry.blocks[position.block].cell(position.cell)
+        sync(position.entry, entry)
+        return cell
     }
 
     /// Caret rect for a display position, in document coordinates.
@@ -292,10 +339,14 @@ public final class DocumentLayout {
         let b = entry.blockIndex(atY: localY)
         let block = entry.blocks[b]
         let blockPoint = CGPoint(x: point.x - x(of: block), y: localY - entry.blockTops[b])
+        // Typesets the table rows it walks through; measuring a row moves
+        // only the blocks and entries after it, never this block's top.
         let c = block.cellIndex(at: blockPoint)
-        let frame = block.cellFrames[c]
+        let frame = block.cellFrame(c)
+        let cell = block.cell(c)
+        sync(i, entry)
         let cellPoint = CGPoint(x: blockPoint.x - frame.minX, y: blockPoint.y - frame.minY)
-        let offset = CaretGeometry.offset(at: cellPoint, in: block.cells[c])
+        let offset = CaretGeometry.offset(at: cellPoint, in: cell)
         return DisplayPosition(entry: i, block: b, cell: c, offset: offset)
     }
 

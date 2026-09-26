@@ -85,23 +85,28 @@ public struct RevealPolicy: Sendable {
     public func revealSet(caret: Int, index: BlockIndex, rope: LipiRope) -> RevealSet {
         var set = RevealSet()
         guard let i = index.entryIndex(containing: caret) else { return set }
+        // Scan in the entry's local coordinates: rebasing a large block (a
+        // table of thousands of cells) would cost more than the scan.
         let entryStart = index.start(of: i)
-        let block = index.absoluteBlock(at: i)
+        let block = index.entries[i].block
         set.entry = block.id
-        var scanner = Scanner(caret: caret, preset: preset, rope: rope, set: set)
+        var scanner = Scanner(caret: caret - entryStart, base: entryStart, preset: preset, rope: rope, set: set)
         scanner.visit(block, isFirstLeafOfItem: false)
-        _ = entryStart
         return scanner.set
     }
 
     private struct Scanner {
+        /// Caret, local to the entry.
         let caret: Int
+        /// Absolute start of the entry; `rope` offsets are `base + local`.
+        let base: Int
         let preset: RevealPreset
         let rope: LipiRope
         var set: RevealSet
 
-        init(caret: Int, preset: RevealPreset, rope: LipiRope, set: RevealSet) {
+        init(caret: Int, base: Int, preset: RevealPreset, rope: LipiRope, set: RevealSet) {
             self.caret = caret
+            self.base = base
             self.preset = preset
             self.rope = rope
             self.set = set
@@ -113,7 +118,7 @@ public struct RevealPolicy: Sendable {
         /// First line of a block: from its start to its first newline.
         func onFirstLine(of r: Range<Int>) -> Bool {
             guard within(r) else { return false }
-            let lineEnd = rope.lineRange(rope.line(at: r.lowerBound)).upperBound
+            let lineEnd = rope.lineRange(rope.line(at: base + r.lowerBound)).upperBound - base
             return caret <= min(lineEnd, r.upperBound)
         }
 
@@ -152,7 +157,7 @@ public struct RevealPolicy: Sendable {
                 return
             case .lineBreak:
                 // Caret on the line that ends with the break, or right after it.
-                let lineStart = rope.lineRange(rope.line(at: r.lowerBound)).lowerBound
+                let lineStart = rope.lineRange(rope.line(at: base + r.lowerBound)).lowerBound - base
                 if caret >= max(lineStart, lineContext.lowerBound), caret <= r.upperBound { set.inlines.insert(inline.id) }
                 return
             case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough, .image:
@@ -178,18 +183,18 @@ public struct RevealPolicy: Sendable {
         /// Position after the `]` that closes a link label.
         func closingBracket(after start: Int, before end: Int) -> Int {
             var p = start
-            let bytes = Array(rope.string(in: start..<end).utf8)
+            let bytes = Array(rope.string(in: (base + start)..<(base + end)).utf8)
             for (i, b) in bytes.enumerated() where b == 0x5D { p = start + i + 1; break }
             return p
         }
 
         mutating func scanEscapes(in r: Range<Int>, literal: String, approximate: Bool) {
             guard !approximate else { return }
-            var text = rope.string(in: r)
+            var text = rope.string(in: (base + r.lowerBound)..<(base + r.upperBound))
             guard text != literal else { return }
             text.withUTF8 { bytes in
                 TextScanner.forEachSequence(in: bytes, base: r.lowerBound) { range, _ in
-                    if caret >= range.lowerBound && caret <= range.upperBound { set.escapes.insert(range.lowerBound) }
+                    if caret >= range.lowerBound && caret <= range.upperBound { set.escapes.insert(base + range.lowerBound) }
                 }
             }
         }

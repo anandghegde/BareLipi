@@ -25,6 +25,20 @@ public struct Renderer {
                 guard box.intersects(dirty) else { continue }
                 drawBackground(block, box: box, layout: layout, in: ctx)
                 drawGutter(block, box: box, layout: layout, in: ctx)
+                if let table = block.table {
+                    // Only the rows under the dirty rect (typeset on demand).
+                    let rows = table.realizeRows(in: (dirty.minY - top)...(dirty.maxY - top))
+                    drawGrid(table, rows: rows, origin: CGPoint(x: x0, y: top), in: ctx)
+                    for r in rows {
+                        for c in 0..<table.columns {
+                            let i = table.cellIndex(row: r, column: c)
+                            let frame = table.frame(ofCell: i).offsetBy(dx: x0, dy: top)
+                            guard frame.intersects(dirty) || frame.height == 0 else { continue }
+                            draw(table.cell(i), at: frame.origin, in: ctx, dirty: dirty)
+                        }
+                    }
+                    continue
+                }
                 for (c, cell) in block.cells.enumerated() {
                     let frame = block.cellFrames[c].offsetBy(dx: x0, dy: top)
                     guard frame.intersects(dirty) || frame.height == 0 else { continue }
@@ -73,26 +87,6 @@ public struct Renderer {
             ctx.setFillColor(colors.border.cgColor)
             ctx.fill(CGRect(x: box.minX, y: box.midY.rounded(), width: box.width, height: 1))
         }
-        if let table = block.table {
-            let tableRect = CGRect(x: box.minX, y: box.minY, width: table.width, height: table.height)
-            ctx.setFillColor(colors.bgElevated.cgColor)
-            ctx.fill(CGRect(x: tableRect.minX, y: tableRect.minY, width: tableRect.width, height: table.rowHeights.first ?? 0))
-            ctx.setStrokeColor(colors.border.cgColor)
-            ctx.setLineWidth(1)
-            var y = tableRect.minY
-            for h in table.rowHeights {
-                ctx.move(to: CGPoint(x: tableRect.minX, y: y + 0.5)); ctx.addLine(to: CGPoint(x: tableRect.maxX, y: y + 0.5))
-                y += h
-            }
-            ctx.move(to: CGPoint(x: tableRect.minX, y: y + 0.5)); ctx.addLine(to: CGPoint(x: tableRect.maxX, y: y + 0.5))
-            var x = tableRect.minX
-            for w in table.columnWidths {
-                ctx.move(to: CGPoint(x: x + 0.5, y: tableRect.minY)); ctx.addLine(to: CGPoint(x: x + 0.5, y: tableRect.maxY))
-                x += w
-            }
-            ctx.move(to: CGPoint(x: x + 0.5, y: tableRect.minY)); ctx.addLine(to: CGPoint(x: x + 0.5, y: tableRect.maxY))
-            ctx.strokePath()
-        }
         if block.context.quoteDepth > 0 {
             ctx.setFillColor(colors.border.cgColor)
             let step = typesetter.scale.l(16)
@@ -101,6 +95,28 @@ public struct Renderer {
                 ctx.fill(CGRect(x: x, y: box.minY, width: 3, height: box.height))
             }
         }
+    }
+
+    /// Header fill and grid lines of the table rows `rows`.
+    func drawGrid(_ table: TableLayout, rows: Range<Int>, origin: CGPoint, in ctx: CGContext) {
+        guard !rows.isEmpty else { return }
+        let minX = origin.x, maxX = origin.x + table.width
+        let minY = origin.y + table.rowY(rows.lowerBound), maxY = origin.y + table.rowY(rows.upperBound)
+        if rows.lowerBound == 0 {
+            ctx.setFillColor(colors.bgElevated.cgColor)
+            ctx.fill(CGRect(x: minX, y: origin.y, width: table.width, height: table.rowHeight(0)))
+        }
+        ctx.setStrokeColor(colors.border.cgColor)
+        ctx.setLineWidth(1)
+        for r in rows.lowerBound...rows.upperBound {
+            let y = origin.y + table.rowY(r)
+            ctx.move(to: CGPoint(x: minX, y: y + 0.5)); ctx.addLine(to: CGPoint(x: maxX, y: y + 0.5))
+        }
+        for c in 0...table.columns {
+            let x = origin.x + table.columnX(c)
+            ctx.move(to: CGPoint(x: x + 0.5, y: minY)); ctx.addLine(to: CGPoint(x: x + 0.5, y: maxY))
+        }
+        ctx.strokePath()
     }
 
     /// Markers hang in the gutter, right-aligned to the text column (§8.2).
@@ -116,11 +132,11 @@ public struct Renderer {
         } else if block.context.quoteDepth > 0, block.context.marker == nil {
             marker = nil
         }
-        guard let marker, let first = block.cells.first?.lines.first else { return }
+        guard let marker, block.cellCount > 0, let first = block.cell(0).lines.first else { return }
         let text = typesetter.attributedString(marker, role: .gutterMarker)
         let line = CTLineCreateWithAttributedString(text)
         let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-        ctx.textPosition = CGPoint(x: box.minX - width - 8, y: box.minY + block.cellFrames[0].minY + first.baseline)
+        ctx.textPosition = CGPoint(x: box.minX - width - 8, y: box.minY + block.cellFrame(0).minY + first.baseline)
         CTLineDraw(line, ctx)
     }
 }

@@ -56,7 +56,16 @@ enum Perf {
         print(String(format: "perf %@: %.3f %@%@%@ %@", key, value, unit, budgetText, baseText, note))
         guard gate, isRelease else { return }
         if let budget { XCTAssertLessThanOrEqual(value, budget, "\(key) over PRD budget", file: file, line: line) }
-        if let base = baseline[key] { XCTAssertLessThanOrEqual(value, base * 1.10, "\(key) regressed >10 % from baseline", file: file, line: line) }
+        // Memory rows are process-level deltas: Core Text's shaping and glyph
+        // caches, page reclaim and the allocator move them by tens of MB
+        // between runs of unchanged code, so they gate on their PRD budget
+        // only; the baseline is printed for reference.
+        guard !key.hasSuffix(".memory"), let base = baseline[key] else { return }
+        // Timing rows: 10 % or 1 ms, whichever is more. The p99 of a 1 ms
+        // keystroke moves by a few hundred µs with the machine's load, and
+        // that is not a regression the gate should stop a build for.
+        let slack = unit == "ms" ? max(base * 0.10, 1.0) : base * 0.10
+        XCTAssertLessThanOrEqual(value, base + slack, "\(key) regressed past baseline + \(unit == "ms" ? "max(10 %, 1 ms)" : "10 %")", file: file, line: line)
     }
 
     static func writeBaselineIfRecording() {

@@ -74,6 +74,13 @@ let package = Package(
             dependencies: ["LipiCore", "LipiHighlight", "LipiLayout"],
             swiftSettings: strict
         ),
+        // Export (P0-14): standalone HTML from cmark-gfm, the highlighter
+        // and the theme's CSS.
+        .target(
+            name: "LipiExport",
+            dependencies: ["LipiCore", "LipiHighlight", "LipiLayout"],
+            swiftSettings: strict
+        ),
         // Deterministic generators for the §9.1 fixture set.
         .target(name: "LipiFixtures", swiftSettings: strict),
         // The application layer shared by the app bundle (App/) and the
@@ -82,7 +89,7 @@ let package = Package(
         // launch measurement.
         .target(
             name: "LipiApp",
-            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"],
+            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiExport", "LipiFixtures"],
             swiftSettings: strict
         ),
         .executableTarget(
@@ -99,7 +106,10 @@ let package = Package(
         ),
         .testTarget(name: "LipiLayoutTests", dependencies: ["LipiLayout", "LipiHighlight", "LipiFixtures"]),
         .testTarget(name: "LipiEditorTests", dependencies: ["LipiEditor", "LipiHighlight", "LipiLayout", "LipiFixtures"]),
-        .testTarget(name: "LipiAppTests", dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiLayout"]),
+        .testTarget(
+            name: "LipiAppTests",
+            dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiExport", "LipiHighlight", "LipiLayout"]
+        ),
         // XCTest performance harness: one test per row of PRD §9.1.
         .testTarget(
             name: "LipiPerfTests",

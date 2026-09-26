@@ -12,20 +12,24 @@ import LipiFixtures
 /// `controller` is parse + projection + font cascade + first layout,
 /// `window` is window/scroll view creation up to `orderFront`, and
 /// `firstDraw` is from there to the end of the first `draw(_:)`.
-struct LaunchPhases {
-    var appLaunch: Double
-    var documentLoad: Double = 0
-    var controller: Double = 0
-    var window: Double = 0
-    var shown: Double = 0
-    var firstDraw: Double = 0
-    var mainToFirstFrame: Double = 0
-    var preMain: Double?
-    var toFirstFrame: Double?
+public struct LaunchPhases {
+    public var appLaunch: Double
+    public var documentLoad: Double = 0
+    public var controller: Double = 0
+    public var window: Double = 0
+    public var shown: Double = 0
+    public var firstDraw: Double = 0
+    public var mainToFirstFrame: Double = 0
+    public var preMain: Double?
+    public var toFirstFrame: Double?
+    /// Main menu construction, part of `appLaunch` (zero when the menu comes from a nib).
+    public var menu: Double = 0
+
+    public init(appLaunch: Double) { self.appLaunch = appLaunch }
 }
 
 @MainActor
-final class MeasureDriver: NSObject {
+public final class MeasureDriver: NSObject {
     private let view: EditorView
     private let seconds: Double
     private var displayLink: CADisplayLink?
@@ -41,14 +45,16 @@ final class MeasureDriver: NSObject {
     private var scrollDirection: CGFloat = 1
     private var keystrokesAtStart = 0
     private let launch: LaunchPhases
+    /// Which host printed the report: "executable" (SwiftPM) or "bundle".
+    public static var host = "executable"
 
-    init(view: EditorView, seconds: Double, launch: LaunchPhases) {
+    public init(view: EditorView, seconds: Double, launch: LaunchPhases) {
         self.view = view
         self.seconds = seconds
         self.launch = launch
     }
 
-    func start() {
+    public func start() {
         started = CACurrentMediaTime()
         keystrokesAtStart = view.keystrokeToDraw.count
         let link = view.displayLink(target: self, selector: #selector(frame(_:)))
@@ -123,12 +129,12 @@ final class MeasureDriver: NSObject {
             return "  \(name): \(samples.count) frames, interval p50 \(ms(percentile(samples, 0.5))), p99 \(ms(percentile(samples, 0.99))), max \(ms(samples.last!)), "
                 + "over 1.5× nominal: \(dropped)"
         }
-        var report = "BareLipi --measure (\(view.controller.engine.rawValue) engine, \(Int(seconds)) s, display \(Int(1 / nominal)) Hz, \(view.controller.count) bytes)\n"
+        var report = "BareLipi --measure (\(MeasureDriver.host), \(view.controller.engine.rawValue) engine, \(Int(seconds)) s, display \(Int(1 / nominal)) Hz, \(view.controller.count) bytes)\n"
         if timedOut {
             report += "  WARNING: the display link fired \(frameTimestamps.count) times in \(Int(seconds + 3)) s; is the display asleep? Frame figures are unreliable.\n"
         }
         if let preMain = launch.preMain { report += "  process start → main: \(ms(preMain))\n" }
-        report += "  main → first frame: \(ms(launch.mainToFirstFrame)) = app launch \(ms(launch.appLaunch))"
+        report += "  main → first frame: \(ms(launch.mainToFirstFrame)) = app launch \(ms(launch.appLaunch)) (menu \(ms(launch.menu)))"
             + " + document load \(ms(launch.documentLoad)) + controller (parse, fonts, layout) \(ms(launch.controller))"
             + " + window \(ms(launch.window)) + first draw \(ms(launch.firstDraw))\n"
         if let total = launch.toFirstFrame { report += "  process start → first frame: \(ms(total))\n" }
@@ -138,7 +144,10 @@ final class MeasureDriver: NSObject {
         report += line("scrolling", scrolling) + "\n"
         report += "  resident: \(residentMB()) MB\n"
         print(report, terminator: "")
-        NSApp.terminate(nil)
+        fflush(stdout)
+        // Exit rather than terminate: in the bundle the typed text leaves an
+        // edited untitled document, and terminate would wait on its save sheet.
+        exit(0)
     }
 
     private func residentMB() -> String {

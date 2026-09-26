@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "LipiCore", targets: ["LipiCore"]),
         .library(name: "LipiLayout", targets: ["LipiLayout"]),
         .library(name: "LipiEditor", targets: ["LipiEditor"]),
+        .library(name: "LipiApp", targets: ["LipiApp"]),
         .executable(name: "BareLipi", targets: ["BareLipi"]),
     ],
     targets: [
@@ -46,9 +47,18 @@ let package = Package(
         ),
         // Deterministic generators for the §9.1 fixture set.
         .target(name: "LipiFixtures", swiftSettings: strict),
+        // The application layer shared by the app bundle (App/) and the
+        // SwiftPM executable: LipiDocument (ADR-008), AtomicWriter (§9.3),
+        // external-change handling, windows, tabs, the main menu and the
+        // launch measurement.
+        .target(
+            name: "LipiApp",
+            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"],
+            swiftSettings: strict
+        ),
         .executableTarget(
             name: "BareLipi",
-            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"],
+            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures", "LipiApp"],
             swiftSettings: strict
         ),
         .executableTarget(name: "lipi-bench", dependencies: ["LipiCore", "LipiLayout", "LipiFixtures"]),
@@ -60,6 +70,7 @@ let package = Package(
         ),
         .testTarget(name: "LipiLayoutTests", dependencies: ["LipiLayout", "LipiFixtures"]),
         .testTarget(name: "LipiEditorTests", dependencies: ["LipiEditor", "LipiFixtures"]),
+        .testTarget(name: "LipiAppTests", dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiLayout"]),
         // XCTest performance harness: one test per row of PRD §9.1.
         .testTarget(
             name: "LipiPerfTests",

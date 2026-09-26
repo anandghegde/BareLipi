@@ -4,18 +4,23 @@ import LipiEditor
 import LipiFixtures
 import LipiLayout
 
-/// Command line: `BareLipi [--fixture <name> | <path>] [--engine lipi|textkit2]
+/// Command line shared by the SwiftPM executable and the app bundle:
+/// `BareLipi [--fixture <name> | <path>] [--engine lipi|textkit2]
 /// [--theme paper|snow|ink|slate] [--zoom <factor>] [--measure <seconds>]`.
-struct Options {
-    var fixture: PerfFixture? = nil
-    var path: String? = nil
-    var engine: LayoutEngineKind = .lipi
-    var theme: Theme = .paper
-    var zoom: CGFloat = 1
-    var measureSeconds: Double? = nil
+/// Arguments the system passes to a bundle (`-psn_…`, `-NSDocumentRevisionsDebugMode YES`
+/// and other `-Key value` defaults) are skipped when `lenient` is set.
+public struct LaunchOptions {
+    public var fixture: PerfFixture? = nil
+    public var path: String? = nil
+    public var engine: LayoutEngineKind = .lipi
+    public var theme: Theme = .paper
+    public var zoom: CGFloat = 1
+    public var measureSeconds: Double? = nil
 
-    static func parse(_ arguments: [String]) -> Options {
-        var options = Options()
+    public init() {}
+
+    public static func parse(_ arguments: [String], lenient: Bool = false) -> LaunchOptions {
+        var options = LaunchOptions()
         var i = 1
         func value() -> String? { i + 1 < arguments.count ? arguments[i + 1] : nil }
         while i < arguments.count {
@@ -44,6 +49,8 @@ struct Options {
                 print("usage: BareLipi [--fixture <name> | <path>] [--engine lipi|textkit2] [--theme paper|snow|ink|slate] [--zoom <factor>] [--measure <seconds>]")
                 exit(0)
             default:
+                if lenient, arg.hasPrefix("-psn_") { break }
+                if lenient, arg.hasPrefix("-"), !arg.hasPrefix("--") { i += 1; break }  // -Key value (NSUserDefaults)
                 if arg.hasPrefix("-") { fail("unknown option \(arg)") }
                 options.path = arg
             }
@@ -52,25 +59,25 @@ struct Options {
         return options
     }
 
-    static func fail(_ message: String) -> Never {
+    public static func fail(_ message: String) -> Never {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         exit(64)
     }
 
     /// The document to open: fixture, file, or the welcome text.
-    func text() throws -> String {
+    public func text() throws -> String {
         if let fixture { return fixture.text() }
         if let path { return try String(contentsOfFile: path, encoding: .utf8) }
-        return Options.welcome
+        return LaunchOptions.welcome
     }
 
-    var title: String {
+    public var title: String {
         if let fixture { return "BareLipi — \(fixture.rawValue)" }
         if let path { return "BareLipi — \((path as NSString).lastPathComponent)" }
         return "BareLipi"
     }
 
-    static let welcome = """
+    public static let welcome = """
     # BareLipi
 
     ಬರೆ · ಲಿಪಿ — a native Markdown editor. Type here; syntax reveals itself around the caret.
@@ -95,7 +102,7 @@ struct Options {
 }
 
 /// Wall-clock start of this process from the kernel (for the pre-main figure).
-func processStartTime() -> Date? {
+public func processStartTime() -> Date? {
     var info = kinfo_proc()
     var size = MemoryLayout<kinfo_proc>.stride
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
@@ -104,10 +111,10 @@ func processStartTime() -> Date? {
     return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1e6)
 }
 
-func percentile(_ sorted: [Double], _ p: Double) -> Double {
+public func percentile(_ sorted: [Double], _ p: Double) -> Double {
     guard !sorted.isEmpty else { return 0 }
     let rank = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * p).rounded())))
     return sorted[rank]
 }
 
-func ms(_ seconds: Double) -> String { String(format: "%.2f ms", seconds * 1000) }
+public func ms(_ seconds: Double) -> String { String(format: "%.2f ms", seconds * 1000) }

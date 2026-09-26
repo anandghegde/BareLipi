@@ -6,7 +6,7 @@ options:
   xcodeVersion: "26.0"
   createIntermediateGroups: true
 packages:
-  LipiCore:
+  BareLipiPackage:
     path: .
 targets:
   BareLipiApp:
@@ -15,8 +15,10 @@ targets:
     sources:
       - path: App
     dependencies:
-      - package: LipiCore
-        product: LipiCore
+      # The app layer (LipiDocument, AtomicWriter, windows, menu) lives in
+      # the SwiftPM package so `swift test` covers it; App/ is the entry point.
+      - package: BareLipiPackage
+        product: LipiApp
     info:
       path: App/Info.plist
       properties:
@@ -26,13 +28,16 @@ targets:
         CFBundleVersion: "1"
         LSMinimumSystemVersion: "15.0"
         NSPrincipalClass: NSApplication
+        NSSupportsAutomaticTermination: true
+        NSSupportsSuddenTermination: false
         NSHumanReadableCopyright: ""
         CFBundleDocumentTypes:
           - CFBundleTypeName: Markdown Document
             CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes: [net.daringfireball.markdown, public.plain-text]
-            NSDocumentClass: $(PRODUCT_MODULE_NAME).LipiDocument
+            # @objc(LipiDocument) in Sources/LipiApp/LipiDocument.swift.
+            NSDocumentClass: LipiDocument
     settings:
       base:
         SWIFT_VERSION: "6.0"

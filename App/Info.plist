@@ -21,7 +21,7 @@
 				<string>public.plain-text</string>
 			</array>
 			<key>NSDocumentClass</key>
-			<string>$(PRODUCT_MODULE_NAME).LipiDocument</string>
+			<string>LipiDocument</string>
 		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
@@ -44,5 +44,9 @@
 	<string></string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<true/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
 </dict>
 </plist>

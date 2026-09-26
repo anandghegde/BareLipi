@@ -22,10 +22,11 @@ func withCarets(_ c: EditorController) -> String {
 }
 
 /// Like `expectCommand`, with `^` selection markers; `modes` limits the
-/// starting modes. Undo restores the input and redo the result.
+/// starting modes. Undo restores the input (only its text with
+/// `undoTextOnly`, for commands after a selection change) and redo the result.
 @MainActor
 func expectEdit(_ input: String, _ expected: String, settings: EditorSettings = EditorSettings(),
-                modes: [EditorMode] = [.hybrid, .source],
+                modes: [EditorMode] = [.hybrid, .source], undoTextOnly: Bool = false,
                 sourceLocation: SourceLocation = #_sourceLocation, _ command: (EditorController) -> Void) {
     let start = parseCarets(input)
     for mode in modes {
@@ -37,7 +38,11 @@ func expectEdit(_ input: String, _ expected: String, settings: EditorSettings = 
         #expect(withCarets(c) == expected, "\(mode) mode", sourceLocation: sourceLocation)
         guard parseCarets(expected).text != start.text else { continue }
         c.undo()
-        #expect(withCarets(c) == input, "undo in \(mode)", sourceLocation: sourceLocation)
+        if undoTextOnly {
+            #expect(c.string == start.text, "undo in \(mode)", sourceLocation: sourceLocation)
+        } else {
+            #expect(withCarets(c) == input, "undo in \(mode)", sourceLocation: sourceLocation)
+        }
         c.redo()
         #expect(withCarets(c) == expected, "redo in \(mode)", sourceLocation: sourceLocation)
     }

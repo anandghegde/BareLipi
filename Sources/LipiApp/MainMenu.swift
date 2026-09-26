@@ -126,7 +126,7 @@ public enum MainMenu {
         let blocks: [Selector] = [
             #selector(EditorView.toggleBlockQuote(_:)), #selector(EditorView.insertCodeFence(_:)),
             #selector(EditorView.insertMathBlock(_:)), #selector(EditorView.insertThematicBreak(_:)),
-            #selector(EditorView.exitBlock(_:)),
+            #selector(EditorView.exitBlock(_:)), #selector(EditorView.duplicateBlock(_:)),
         ]
         for action in inline { menu.addItem(editorItem(action)) }
         menu.addItem(.separator())

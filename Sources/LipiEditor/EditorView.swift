@@ -160,6 +160,16 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         controller.draw(in: ctx, dirty: dirty)
+        if let block = controller.blockSelection {
+            // Block selection ring (§6.1.4) around the whole block.
+            let ring = controller.rects(forSource: block, visible: visibleRect.union(dirty)).reduce(CGRect.null) { $0.union($1) }
+            if !ring.isNull, ring.insetBy(dx: -6, dy: -4).intersects(dirty) {
+                ctx.setStrokeColor(colors.caret.cgColor)
+                ctx.setLineWidth(1.5)
+                ctx.addPath(CGPath(roundedRect: ring.insetBy(dx: -4, dy: -3), cornerWidth: 4, cornerHeight: 4, transform: nil))
+                ctx.strokePath()
+            }
+        }
         if let marked = controller.marked {
             ctx.setFillColor(colors.ink.cgColor)
             for rect in controller.rects(forSource: marked.range, visible: dirty) {
@@ -189,6 +199,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if !controller.hasMarkedText, mods == .shift, event.keyCode == 36 || event.keyCode == 76 {
             controller.insertHardBreak()
+            return
+        }
+        if mods == .option, event.keyCode == 126 || event.keyCode == 125, controller.moveBlock(up: event.keyCode == 126) {
             return
         }
         if !controller.hasMarkedText, mods == .option, event.keyCode == 36 || event.keyCode == 76 {
@@ -259,6 +272,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         .init("Math Block", "b", [.command, .option], #selector(insertMathBlock(_:))),
         .init("Horizontal Rule", "-", [.command, .option], #selector(insertThematicBreak(_:))),
         .init("Exit Block", "\r", [.command], #selector(exitBlock(_:))),
+        .init("Duplicate Block", "d", [.command, .shift], #selector(duplicateBlock(_:))),
     ]
 
     public override func doCommand(by selector: Selector) {
@@ -298,6 +312,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(NSResponder.insertTab(_:)): controller.insertTab()
         case #selector(NSResponder.insertBacktab(_:)): controller.insertBacktab()
         case #selector(NSResponder.selectAll(_:)): controller.selectAll()
+        case #selector(NSResponder.cancelOperation(_:)): controller.selectEnclosingBlock()
         case #selector(NSResponder.pageDown(_:)), #selector(NSResponder.scrollPageDown(_:)): scrollPage(1)
         case #selector(NSResponder.pageUp(_:)), #selector(NSResponder.scrollPageUp(_:)): scrollPage(-1)
         default: super.doCommand(by: selector)
@@ -323,6 +338,10 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         controller.toggleSourceMode(anchor: anchor)
     }
     @objc public func toggleStrong(_ sender: Any?) { controller.toggleStrong() }
+    /// Cmd-Shift-D (§6.1.4).
+    @objc public func duplicateBlock(_ sender: Any?) { controller.duplicateBlock() }
+    /// Esc (§6.1.4): select the enclosing block; again to widen.
+    @objc public func selectEnclosingBlock(_ sender: Any?) { controller.selectEnclosingBlock() }
     @objc public func toggleEmphasis(_ sender: Any?) { controller.toggleEmphasis() }
     @objc public func toggleStrikethrough(_ sender: Any?) { controller.toggleStrikethrough() }
     @objc public func toggleCodeSpan(_ sender: Any?) { controller.toggleCodeSpan() }

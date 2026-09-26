@@ -184,6 +184,7 @@ public final class EditorController {
 
     /// Steps 1–3: buffer, parser, caret. Leaves `marked` to the caller.
     private func applyEdit(_ range: Range<Int>, _ text: String, caretAfter: Int?) -> Delta {
+        blockSelectionRange = nil
         let delta = buffer.apply(Edit(replacing: range, with: text))
         parser.apply(delta, then: buffer.rope)
         selection = SelectionModel(caret: caretAfter ?? (range.lowerBound + text.utf8.count))
@@ -234,6 +235,8 @@ public final class EditorController {
     @discardableResult
     public func insertNewline() -> EditorChange {
         if marked != nil { _ = unmarkText() }
+        // Enter in a block selection re-enters the block (§6.1.4).
+        if let r = blockSelection { return moveCaret(to: r.lowerBound) }
         closeTypingGroup()
         if let plan = commands.tableNewline() ?? commands.smartNewline() { return perform(plan) }
         let eol = CommandDocument(rope: buffer.rope, index: parser.index).eol(near: selection.range.lowerBound)
@@ -244,6 +247,7 @@ public final class EditorController {
     /// halves of an empty auto-paired pair).
     @discardableResult
     public func deleteBackward() -> EditorChange {
+        if let r = blockSelection { return perform(commands.deleteBlock(r)) }
         if !selection.isEmpty { closeTypingGroup(); return replace(selection.range, with: "") }
         let caret = selection.head
         guard caret > 0 else { return refresh(textChanged: false, started: DispatchTime.now()) }
@@ -261,6 +265,7 @@ public final class EditorController {
     /// Deletes the selection, or the grapheme cluster after the caret.
     @discardableResult
     public func deleteForward() -> EditorChange {
+        if let r = blockSelection { return perform(commands.deleteBlock(r)) }
         if !selection.isEmpty { closeTypingGroup(); return replace(selection.range, with: "") }
         let caret = selection.head
         guard caret < buffer.count else { return refresh(textChanged: false, started: DispatchTime.now()) }
@@ -356,6 +361,7 @@ public final class EditorController {
         if marked != nil { marked = nil }
         closeTypingGroup()
         pairClosers.removeAll()
+        blockSelectionRange = nil
         let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
         guard !plan.edits.isEmpty else {
             // A pure selection change (table cell navigation, block selection).
@@ -488,6 +494,54 @@ public final class EditorController {
     private var isAtItemStart: Bool {
         let line = CommandDocument(rope: buffer.rope, index: parser.index).prefix(ofLineAt: selection.head)
         return line.hasMarker && selection.head >= line.markerEnd && selection.head <= line.contentStart
+    }
+
+    // MARK: Block selection (§6.1.4)
+
+    private var blockSelectionRange: Range<Int>?
+
+    /// The selected block's source while the selection is a block
+    /// selection (`Esc`); nil once the selection or the text changes.
+    public var blockSelection: Range<Int>? {
+        guard let r = blockSelectionRange, selection.anchor == r.lowerBound, selection.head == r.upperBound else { return nil }
+        return r
+    }
+
+    /// Esc: selects the block around the selection as one unit; again, the
+    /// block around that. No-op outside blocks.
+    @discardableResult
+    public func selectEnclosingBlock() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        guard let r = commands.expandBlockSelection(from: blockSelection) else {
+            closeTypingGroup()
+            return refresh(textChanged: false, started: DispatchTime.now())
+        }
+        blockSelectionRange = r
+        return select(r)
+    }
+
+    /// Cmd-Shift-D: duplicates the selected block (or the block around the
+    /// caret) and selects the copy.
+    @discardableResult
+    public func duplicateBlock() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        guard let r = blockSelection ?? commands.expandBlockSelection(from: nil),
+              let plan = commands.duplicateBlock(r) else { return run(nil) }
+        let change = perform(plan)
+        blockSelectionRange = selection.range
+        return change
+    }
+
+    /// Opt-Up / Opt-Down in a block selection: moves the block past its
+    /// previous or next sibling. Returns false outside a block selection.
+    @discardableResult
+    public func moveBlock(up: Bool) -> Bool {
+        guard let r = blockSelection else { return false }
+        if let plan = commands.moveBlock(r, up: up) {
+            perform(plan)
+            blockSelectionRange = selection.range
+        }
+        return true
     }
 
     // MARK: Auto-pair

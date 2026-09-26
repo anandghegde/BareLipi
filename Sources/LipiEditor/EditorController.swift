@@ -351,7 +351,7 @@ public final class EditorController {
 
     // MARK: Commands (§6.1.5)
 
-    private var commands: MarkdownCommands {
+    var commands: MarkdownCommands {
         MarkdownCommands(rope: buffer.rope, index: parser.index, selection: selection, settings: settings)
     }
 

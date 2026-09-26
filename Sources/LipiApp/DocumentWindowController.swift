@@ -45,6 +45,7 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
 
     private func editorDidChange(_ change: EditorChange) {
         counts.setNeedsUpdate(textChanged: change.textChanged)
+        if let outline = chrome.sidebar as? OutlineSidebar { outline.setNeedsUpdate(textChanged: change.textChanged) }
     }
 
     @available(*, unavailable)
@@ -74,13 +75,16 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         let anchor = controller.sourceOffset(at: CGPoint(x: controller.layout.textOrigin + 1, y: visible.minY + 1)) ?? 0
         let lineTop = controller.caretRect(forSource: anchor).minY
         let selection = controller.selection
-        return RestorableEditorState(anchor: selection.anchor, head: selection.head, scrollAnchor: anchor,
-                                     scrollOffset: Double(visible.minY - lineTop))
+        var state = RestorableEditorState(anchor: selection.anchor, head: selection.head, scrollAnchor: anchor,
+                                          scrollOffset: Double(visible.minY - lineTop))
+        state.showsOutline = isOutlineVisible
+        return state
     }
 
     /// Puts the caret, selection and viewport back.
     public func apply(_ state: RestorableEditorState) {
         let s = state.clamped(to: controller.count)
+        if let shows = s.showsOutline, shows != isOutlineVisible { setOutlineVisible(shows, focus: false) }
         controller.moveCaret(to: s.anchor)
         if s.head != s.anchor { controller.moveCaret(to: s.head, extend: true) }
         let lineTop = controller.caretRect(forSource: s.scrollAnchor).minY

@@ -20,6 +20,8 @@ public struct RestorableEditorState: Codable, Sendable, Equatable {
     public var scrollAnchor: Int
     /// Points from the top of `scrollAnchor`'s line to the top of the viewport.
     public var scrollOffset: Double
+    /// The outline sidebar is open (§6.8); nil in state from older builds.
+    public var showsOutline: Bool?
 
     public init(anchor: Int, head: Int, scrollAnchor: Int, scrollOffset: Double) {
         self.anchor = anchor

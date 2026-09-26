@@ -155,6 +155,8 @@ public enum MainMenu {
         let menu = NSMenu(title: "View")
         menu.addItem(editorItem(#selector(EditorView.toggleSourceMode(_:))))
         menu.addItem(.separator())
+        menu.addItem(item("Outline", #selector(DocumentWindowController.toggleOutline(_:)), "2", [.command, .control]))
+        menu.addItem(.separator())
         // Reveal presets and zoom go here when EditorView implements them.
         menu.addItem(item("Show Tab Bar", #selector(NSWindow.toggleTabBar(_:))))
         menu.addItem(item("Show All Tabs", #selector(NSWindow.toggleTabOverview(_:)), "\\", [.command, .shift]))

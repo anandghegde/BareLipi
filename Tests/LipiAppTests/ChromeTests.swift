@@ -46,4 +46,52 @@ struct ChromeTests {
         wc.chrome.layoutSubtreeIfNeeded()
         #expect(wc.content.frame.height == 600)
     }
+
+    // MARK: Outline (§6.8)
+
+    @Test func outlineShowsHeadingsAndFollowsTheCaret() {
+        let text = "# A\n\n- [x] one\n- [ ] two\n\n### C\n\n- [x] three\n\n## B\n\ntext\n"
+        let wc = window(text)
+        #expect(!wc.isOutlineVisible)
+        wc.toggleOutline(nil)
+        #expect(wc.isOutlineVisible)
+        let pane = wc.outlineSidebar
+        #expect(pane.outline.items.map(\.title) == ["A", "C", "B"])
+        #expect(pane.visibleItems == [0, 1, 2])
+        #expect(pane.tasks.map(\.done) == [2, 1, 0])
+        #expect(pane.tasks.map(\.total) == [3, 1, 0])
+        wc.chrome.layoutSubtreeIfNeeded()
+        #expect(pane.frame.width == 240)
+        #expect(wc.content.frame.minX == 240)
+
+        wc.controller.moveCaret(to: text.utf8.count - 2)
+        pane.update()
+        #expect(pane.outlineView.selectedRow == 2)
+        pane.maxLevel = 2
+        #expect(pane.visibleItems == [0, 2])
+        pane.filter = "c"
+        #expect(pane.visibleItems == [1])
+        pane.filter = ""
+
+        wc.jumpToHeading(1)
+        #expect(wc.controller.selection.head == text.utf8.count - "### C\n\n- [x] three\n\n## B\n\ntext\n".utf8.count)
+    }
+
+    @Test func outlineTracksEditsAndRestores() {
+        let wc = window("# One\n\ntext\n")
+        wc.setOutlineVisible(true, focus: false)
+        wc.controller.moveCaret(to: wc.controller.count)
+        wc.controller.insert("\n## Two\n")
+        wc.outlineSidebar.update()
+        #expect(wc.outlineSidebar.outline.items.map(\.title) == ["One", "Two"])
+        let state = wc.editorState()
+        #expect(state.showsOutline == true)
+        let other = window("# X\n")
+        other.apply(state)
+        #expect(other.isOutlineVisible)
+        var hidden = state
+        hidden.showsOutline = false
+        other.apply(hidden)
+        #expect(!other.isOutlineVisible)
+    }
 }

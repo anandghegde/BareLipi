@@ -5,20 +5,39 @@ import LipiLayout
 
 /// Standalone HTML export (P0-14, Phase 1): cmark-gfm's HTML for the
 /// document, fenced code coloured by the tree-sitter highlighter, and the
-/// theme as inline CSS. The file loads nothing from elsewhere; only the
-/// document's own image and link targets point outside it.
+/// theme as inline CSS. Headings carry the editor's anchors, `[toc]` is a
+/// list of links and emoji shortcodes are emoji (`ExtendedSyntaxRewriter`).
+/// The file loads nothing from elsewhere; only the document's own image and
+/// link targets point outside it.
 public struct HTMLExporter: Sendable {
     public var theme: Theme
+    /// The window's theme alone, or it and its pair by `prefers-color-scheme`.
+    public var themeMode: ExportThemeMode
+    /// The opt-in syntaxes turned on in View › Markdown Extensions
+    /// (`subscript`, `superscript`, `highlight`); anything else is ignored.
+    public var syntax: ParserOptions.Extensions
     /// Colours fenced code; `nil` exports code uncoloured.
     public var highlighter: HighlightService?
 
     /// GFM, footnotes and math, as the editor parses; footnotes are
     /// numbered and gathered at the end, as a reader expects.
     public static let parserOptions = ParserOptions(extensions: [.gfm, .footnotes, .math])
+    /// The syntaxes `syntax` may add.
+    public static let optionalSyntax: ParserOptions.Extensions = [.subscript, .superscript, .highlight]
 
-    public init(theme: Theme = .taalegari, highlighter: HighlightService? = .shared) {
+    public init(theme: Theme = .taalegari, themeMode: ExportThemeMode = .window, syntax: ParserOptions.Extensions = [],
+                highlighter: HighlightService? = .shared) {
         self.theme = theme
+        self.themeMode = themeMode
+        self.syntax = syntax
         self.highlighter = highlighter
+    }
+
+    /// `parserOptions` plus the opt-in syntaxes that are on.
+    public var options: ParserOptions {
+        var options = HTMLExporter.parserOptions
+        options.extensions.formUnion(syntax.intersection(HTMLExporter.optionalSyntax))
+        return options
     }
 
     /// The complete document.
@@ -43,10 +62,10 @@ public struct HTMLExporter: Sendable {
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta name="generator" content="BareLipi">
+        <meta name="generator" content="BareLipi">\(themeMode == .lightAndDark ? "\n<meta name=\"color-scheme\" content=\"light dark\">" : "")
         <title>\(HTMLEscaping.escape(title))</title>
         <style>
-        \(ThemeCSSWriter(theme: theme).css())
+        \(ThemeCSSWriter(theme: theme, mode: themeMode).css())
         </style>
         </head>
         <body>
@@ -63,9 +82,13 @@ public struct HTMLExporter: Sendable {
         Data(document(markdown: markdown, title: title).utf8)
     }
 
-    /// The rendered body: cmark-gfm HTML with fenced code highlighted.
+    /// The rendered body: cmark-gfm HTML with the Phase 1 syntax additions
+    /// and fenced code highlighted.
     public func body(markdown: String) -> String {
-        let html = HTMLExporter.convertMath(in: LipiParser.renderHTML(markdown, options: HTMLExporter.parserOptions))
+        let options = options
+        let rewriter = ExtendedSyntaxRewriter(markdown: markdown, extensions: options.extensions)
+        let rendered = LipiParser.renderHTML(markdown, options: options) { rewriter.rewrite($0) }
+        let html = HTMLExporter.convertMath(in: rendered)
         guard let highlighter else { return html }
         return HTMLExporter.highlightCodeBlocks(in: html, highlighter: highlighter)
     }

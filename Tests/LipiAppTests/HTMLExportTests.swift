@@ -50,7 +50,7 @@ struct HTMLExportTests {
 
     @Test func rendersGFMFootnotesAndMath() {
         let body = HTMLExporter(highlighter: nil).body(markdown: sample)
-        #expect(body.contains("<h1>Notes &amp; 1 &lt; 2</h1>"))
+        #expect(body.contains("<h1 id=\"notes--1--2\">Notes &amp; 1 &lt; 2</h1>"))
         #expect(body.contains("<table>"))
         #expect(body.contains("checked"))
         #expect(body.contains("class=\"footnotes\""))
@@ -118,7 +118,7 @@ struct HTMLExportTests {
         try await document.exportHTML(to: target)
         let html = try String(contentsOf: target, encoding: .utf8)
         #expect(html.contains("<title>Report</title>"))
-        #expect(html.contains("<h1>Report</h1>"))
+        #expect(html.contains("<h1 id=\"report\">Report</h1>"))
         #expect(html.contains("<span class=\"tok-keyword\">def</span>"))
         #expect(html.contains("--lipi-bg: \(Theme.kari.colors.bg.hexString);"))
         #expect(!document.isDocumentEdited)

@@ -581,6 +581,15 @@ public struct LipiParser: Sendable {
         CMarkBridge.renderHTML(markdown, extensions: options.extensionNames, cmarkOptions: options.cmarkOptions)
     }
 
+    /// HTML as above after `rewrite` has edited cmark's tree in place (it
+    /// gets the document node, a `cmark_node *`). Export uses it for heading
+    /// ids, `[toc]` and emoji.
+    public static func renderHTML(_ markdown: String, options: ParserOptions,
+                                  rewrite: (OpaquePointer) -> Void) -> String {
+        CMarkBridge.renderHTML(markdown, extensions: options.extensionNames, cmarkOptions: options.cmarkOptions,
+                               rewrite: rewrite)
+    }
+
     /// HTML with an explicit extension list, matching the spec runner's
     /// per-example `extensions` (`footnotes` also sets the footnotes option).
     public static func renderHTML(_ markdown: String, extensions: [String]) -> String {

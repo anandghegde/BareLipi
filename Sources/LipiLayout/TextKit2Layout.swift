@@ -35,6 +35,44 @@ public final class TextKit2Layout {
     public var textStorage: NSTextStorage { contentStorage.textStorage! }
     public var length: Int { textStorage.length }
 
+    /// Changes the text column width; TextKit 2 invalidates its layout.
+    public func setWidth(_ width: CGFloat) {
+        guard container.size.width != width else { return }
+        container.size = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+    }
+
+    /// Display position of a document offset (the inverse of
+    /// `documentOffset(of:)`); offsets inside a separator map to the end of
+    /// the cell before it.
+    public func position(forDocumentOffset offset: Int) -> DisplayPosition? {
+        guard !entryRanges.isEmpty else { return nil }
+        var lo = 0, hi = entryRanges.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if entryRanges[mid].lowerBound <= offset { lo = mid } else { hi = mid - 1 }
+        }
+        let range = entryRanges[lo]
+        let local = max(0, min(offset - range.lowerBound, range.count))
+        let starts = cellStarts[lo]
+        guard !starts.isEmpty else { return DisplayPosition(entry: lo, block: 0, cell: 0, offset: 0) }
+        var c = 0
+        while c + 1 < starts.count, starts[c + 1].start <= local { c += 1 }
+        let end = c + 1 < starts.count ? starts[c + 1].start - 1 : range.count
+        let cellOffset = max(0, min(local - starts[c].start, end - starts[c].start))
+        return DisplayPosition(entry: lo, block: starts[c].block, cell: starts[c].cell, offset: cellOffset)
+    }
+
+    /// Selection rectangles for a document range (`enumerateTextSegments`).
+    public func selectionRects(forDocumentRange range: Range<Int>) -> [CGRect] {
+        guard !range.isEmpty, let textRange = NSTextRange(location: location(atOffset: range.lowerBound), end: location(atOffset: range.upperBound)) else { return [] }
+        var rects: [CGRect] = []
+        layoutManager.enumerateTextSegments(in: textRange, type: .selection, options: [.rangeNotRequired]) { _, frame, _, _ in
+            rects.append(frame)
+            return true
+        }
+        return rects
+    }
+
     // MARK: Building
 
     func attributed(_ entry: ProjectedEntry, typesetter: Typesetter) -> (NSAttributedString, [CellStart]) {

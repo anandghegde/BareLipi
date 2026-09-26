@@ -72,9 +72,9 @@ public final class CellLayout {
     }
 
     public func lineIndex(atY y: CGFloat) -> Int {
-        if y < 0 { return 0 }
-        let i = Int(y / typeset.lineHeight)
-        return min(max(i, 0), lines.count - 1)
+        guard y.isFinite, y >= 0 else { return 0 }
+        let i = min(y / typeset.lineHeight, CGFloat(lines.count))
+        return min(max(Int(i), 0), lines.count - 1)
     }
 }
 

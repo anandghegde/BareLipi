@@ -201,6 +201,8 @@ public final class EditorController {
             closeTypingGroup()
             return applyPendingToggle(change)
         }
+        // §6.1.5 Tables: a literal `|` typed in a cell is written `\|`.
+        let text = text == "|" && mode == .hybrid && commands.escapesPipe ? "\\|" : text
         let single = text.utf8.count <= 4 && !text.contains("\n") && !text.contains("\r")
         guard single else {
             closeTypingGroup()
@@ -233,7 +235,7 @@ public final class EditorController {
     public func insertNewline() -> EditorChange {
         if marked != nil { _ = unmarkText() }
         closeTypingGroup()
-        if let plan = commands.smartNewline() { return perform(plan) }
+        if let plan = commands.tableNewline() ?? commands.smartNewline() { return perform(plan) }
         let eol = CommandDocument(rope: buffer.rope, index: parser.index).eol(near: selection.range.lowerBound)
         return replace(selection.range, with: eol)
     }
@@ -354,7 +356,13 @@ public final class EditorController {
         if marked != nil { marked = nil }
         closeTypingGroup()
         pairClosers.removeAll()
-        guard !plan.edits.isEmpty else { return refresh(textChanged: false, started: started) }
+        let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
+        guard !plan.edits.isEmpty else {
+            // A pure selection change (table cell navigation, block selection).
+            selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
+            lastTypingCaret = selection.head
+            return refresh(textChanged: false, started: started)
+        }
         buffer.beginUndoGroup(selection: undoSelection)
         let ordered = plan.edits.sorted {
             $0.range.lowerBound.byte != $1.range.lowerBound.byte ? $0.range.lowerBound.byte > $1.range.lowerBound.byte
@@ -362,7 +370,6 @@ public final class EditorController {
         }
         for edit in ordered { parser.apply(buffer.apply(edit)) }
         parser.reparse(buffer.rope)
-        let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
         selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
         buffer.endUndoGroup(selection: undoSelection)
         lastTypingCaret = selection.head
@@ -438,19 +445,30 @@ public final class EditorController {
         return run(commands.hardBreak())
     }
 
-    /// Tab: indents a list item when the caret is at its content start,
-    /// otherwise types a tab.
+    /// Tab: the next table cell (a new row after the last one), indents a
+    /// list item when the caret is at its content start, otherwise types a tab.
     @discardableResult
     public func insertTab() -> EditorChange {
+        if marked == nil, let plan = commands.tableTab(backward: false) { return perform(plan) }
         if selection.isEmpty, !isAtItemStart { return insert("\t") }
         return indentListItem()
     }
 
-    /// Shift-Tab: outdents a list item when the caret is at its content start.
+    /// Shift-Tab: the previous table cell, or outdents a list item when the
+    /// caret is at its content start.
     @discardableResult
     public func insertBacktab() -> EditorChange {
+        if marked == nil, let plan = commands.tableTab(backward: true) { return perform(plan) }
         if selection.isEmpty, !isAtItemStart { return refresh(textChanged: false, started: DispatchTime.now()) }
         return outdentListItem()
+    }
+
+    /// Opt-Enter: `<br>` inside a table cell, otherwise Enter.
+    @discardableResult
+    public func insertCellLineBreak() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        if let plan = commands.tableLineBreak() { return perform(plan) }
+        return insertNewline()
     }
 
     private var isAtItemStart: Bool {

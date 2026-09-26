@@ -22,11 +22,16 @@ public struct EditorSettings: Sendable, Hashable {
     public var hardBreak: HardBreak = .backslash
     /// Auto-pair `*`, `_`, backtick, `[`, `(`, `$`, `"` and `“`.
     public var autoPair = true
+    /// Settings → Complete tables on Enter (§6.1.5): `| a | b |` then Enter
+    /// writes the delimiter row and an empty body row.
+    public var completeTables = true
 
-    public init(emphasisMarker: Character = "*", hardBreak: HardBreak = .backslash, autoPair: Bool = true) {
+    public init(emphasisMarker: Character = "*", hardBreak: HardBreak = .backslash, autoPair: Bool = true,
+                completeTables: Bool = true) {
         self.emphasisMarker = emphasisMarker
         self.hardBreak = hardBreak
         self.autoPair = autoPair
+        self.completeTables = completeTables
     }
 }
 
@@ -783,7 +788,7 @@ struct MarkdownCommands {
     // MARK: Block insertion
 
     /// Quote prefix (and list content indentation) to repeat on inserted lines.
-    private func continuation(_ line: LinePrefix) -> String {
+    func continuation(_ line: LinePrefix) -> String {
         var s = doc.string(line.start..<line.quoteEnd)
         if let marker = line.marker {
             s += doc.string(line.quoteEnd..<marker.lowerBound) + String(repeating: " ", count: line.markerEnd - marker.lowerBound)

@@ -190,6 +190,10 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
             controller.insertHardBreak()
             return
         }
+        if !controller.hasMarkedText, mods == .option, event.keyCode == 36 || event.keyCode == 76 {
+            controller.insertCellLineBreak()
+            return
+        }
         if mods.contains(.command), performEditorKeyEquivalent(event) { return }
         if inputContext?.handleEvent(event) == true { return }
         interpretKeyEvents([event])

@@ -418,6 +418,29 @@ struct ProjectionFoldingTests {
         checkInvariants(buffer.rope.string(in: 0..<buffer.count), projection)
     }
 
+    @Test("typing beside a footnote reference rebuilds only that paragraph")
+    func footnoteTypingIsLocal() {
+        var text = ""
+        for i in 0..<20 { text += "p\(i)[^n\(i)] words\n\n" }
+        for i in 0..<20 { text += "[^n\(i)]: note \(i)\n\n" }
+        var buffer = SourceBuffer(text)
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        var projection = Projection()
+        projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        for _ in 0..<3 {
+            let at = text.utf8.count / 4 + 3
+            let delta = buffer.apply(Edit(replacing: at..<at, with: "z"))
+            parser.apply(delta, then: buffer.rope)
+            let result = projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+            #expect(result.rebuilt == 1)
+        }
+        var fresh = Projection()
+        fresh.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        #expect(fresh.blocks.map(\.block.cells) == projection.blocks.map(\.block.cells))
+        #expect(fresh.blocks.map(\.block.context) == projection.blocks.map(\.block.context))
+    }
+
     @Test("source mode shows footnote labels as written")
     func footnoteSourceMode() {
         let rope = LipiRope("t[^n]\n\n[^n]: x")

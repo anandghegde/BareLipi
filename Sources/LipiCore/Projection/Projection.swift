@@ -22,12 +22,27 @@ public struct ProjectedEntry: Sendable {
     /// inline or escape); only kept for a table entry with a non-trivial
     /// reveal key.
     var revealedRows: [Int] = []
-    /// Normalized labels of the footnote references in the entry, in order,
-    /// and of the definitions it holds.
-    var footnoteRefs: [String] = []
-    var footnoteDefs: [String] = []
-    /// Hash of the footnote numbers the entry's blocks were built with.
-    var footnoteKey = 0
+    /// The entry's footnote labels and the numbers it was built with; nil
+    /// when it has none.
+    var notes: EntryNotes? = nil
+    var footnoteKey: Int { notes?.key ?? 0 }
+}
+
+/// The footnote references and definitions of one entry (normalized labels,
+/// in order), the hash of their numbers and whether a definition starts a
+/// footnotes region.
+final class EntryNotes: Sendable {
+    let refs: [String]
+    let defs: [String]
+    let key: Int
+    let regionStart: Bool
+
+    init(refs: [String], defs: [String], key: Int, regionStart: Bool) {
+        self.refs = refs
+        self.defs = defs
+        self.key = key
+        self.regionStart = regionStart
+    }
 }
 
 /// Footnote numbers in document order (§6.13): a label's number is the
@@ -89,6 +104,11 @@ public struct Projection: Sendable {
     public private(set) var length = 0
     /// Footnote numbers as of the last `update`.
     public private(set) var footnotes = FootnoteNumbering()
+    /// The notes of the entries with footnote labels as of the last
+    /// `update`, in order.
+    private var footnoteSequence: [EntryNotes] = []
+    /// The kept entries' `notes` are up to date (false after source mode).
+    private var notesComputed = false
 
     public struct UpdateResult: Sendable, Equatable {
         public var rebuilt = 0
@@ -116,41 +136,85 @@ public struct Projection: Sendable {
     /// `reveal`.
     @discardableResult
     public mutating func update(index: BlockIndex, rope: LipiRope, reveal: RevealSet) -> UpdateResult {
-        var old: [NodeID: ProjectedEntry] = [:]
+        // Previous entries by identity (positions in `entries`, so lookups
+        // do not copy them).
+        var old: [NodeID: Int] = [:]
         old.reserveCapacity(entries.count)
-        for e in entries { old[e.id] = e }
+        for j in entries.indices { old[entries[j].id] = j }
 
         // Footnotes: labels per entry (kept from the previous projection
         // when the entry did not change), then the document's numbering.
-        var notes: [Int: (refs: [String], defs: [String], key: Int)] = [:]
-        var numbering = FootnoteNumbering()
+        // The numbering is recomputed only when some entry's labels, the
+        // sequence of entries with labels, or a region start changed.
+        var notes: [EntryNotes?] = []
+        var numbering = footnotes
         if !sourceMode {
-            var refs: [[String]] = [], defs: [[String]] = [], at: [Int] = []
+            // Entries with labels in order; `fresh` notes still need a key.
+            var found: [(i: Int, notes: EntryNotes, fresh: Bool)] = []
+            var changed = false
             for i in index.entries.indices {
-                let entry = index.entries[i]
-                guard entry.hasBracket else { continue }
-                let labels: (refs: [String], defs: [String])
-                if !entry.isDirty, let kept = old[entry.block.id], kept.revision == entry.revision {
-                    labels = (kept.footnoteRefs, kept.footnoteDefs)
+                guard index.entries[i].hasBracket else { continue }
+                let j = old[index.entries[i].block.id]
+                let unchanged = !index.entries[i].isDirty && j.map { entries[$0].revision == index.entries[i].revision } == true
+                let prior = j.flatMap { entries[$0].notes }
+                let region = Self.isRegionStart(i, in: index)
+                let n: EntryNotes, fresh: Bool
+                if unchanged, let prior, prior.regionStart == region {
+                    n = prior; fresh = false
+                } else if unchanged, prior == nil, notesComputed, !region {
+                    continue // it had no labels when it was built
                 } else {
-                    labels = FootnoteNumbering.labels(in: entry.block)
+                    let labels: (refs: [String], defs: [String])
+                    if unchanged, let prior { labels = (prior.refs, prior.defs) } // only the region changed
+                    else { labels = FootnoteNumbering.labels(in: index.entries[i].block) }
+                    guard !labels.refs.isEmpty || !labels.defs.isEmpty else { continue }
+                    n = EntryNotes(refs: labels.refs, defs: labels.defs, key: 0, regionStart: region); fresh = true
                 }
-                guard !labels.refs.isEmpty || !labels.defs.isEmpty else { continue }
-                refs.append(labels.refs); defs.append(labels.defs); at.append(i)
+                // The numbering depends only on the labels in order (an
+                // edited entry may come back with a new identity).
+                let k = found.count
+                if !changed {
+                    if k >= footnoteSequence.count { changed = true } else {
+                        let p = footnoteSequence[k]
+                        if p !== n, p.refs != n.refs || p.defs != n.defs || p.regionStart != n.regionStart { changed = true }
+                    }
+                }
+                found.append((i, n, fresh))
             }
-            if !at.isEmpty {
-                numbering = FootnoteNumbering(refs: refs, defs: defs)
-                for (k, i) in at.enumerated() {
+            if found.count != footnoteSequence.count { changed = true }
+            if found.isEmpty {
+                numbering = FootnoteNumbering()
+                footnoteSequence = []
+            } else {
+                notes = Array(repeating: nil, count: index.count)
+                if changed { numbering = FootnoteNumbering(refs: found.map(\.notes.refs), defs: found.map(\.notes.defs)) }
+                var sequence: [EntryNotes] = []
+                sequence.reserveCapacity(found.count)
+                for f in found {
+                    if !changed, !f.fresh {
+                        notes[f.i] = f.notes
+                        sequence.append(f.notes)
+                        continue
+                    }
+                    let n = f.notes
                     var h = Hasher()
                     // Labels too, so an equal key after a table row edit means
                     // the other rows' references keep their numbers.
-                    for r in refs[k] { h.combine(r); h.combine(numbering.numbers[r] ?? 0) }
+                    for r in n.refs { h.combine(r); h.combine(numbering.numbers[r] ?? 0) }
                     h.combine(-1)
-                    for d in defs[k] { h.combine(d); h.combine(numbering.numbers[d] ?? 0) }
-                    h.combine(Self.isRegionStart(i, in: index))
-                    notes[i] = (refs[k], defs[k], h.finalize() | 1)
+                    for d in n.defs { h.combine(d); h.combine(numbering.numbers[d] ?? 0) }
+                    h.combine(n.regionStart)
+                    let keyed = EntryNotes(refs: n.refs, defs: n.defs, key: h.finalize() | 1, regionStart: n.regionStart)
+                    notes[f.i] = keyed
+                    sequence.append(keyed)
                 }
+                footnoteSequence = sequence
             }
+            notesComputed = true
+        } else {
+            notesComputed = false
+            footnoteSequence = []
+            numbering = FootnoteNumbering()
         }
 
         var result = UpdateResult()
@@ -162,22 +226,21 @@ public struct Projection: Sendable {
             let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1) : revealKey(for: entry.block.id, reveal: reveal)
             let note = notes.isEmpty ? nil : notes[i]
             let noteKey = note?.key ?? 0
-            if !entry.isDirty, var kept = old[entry.block.id], kept.length == entry.length, kept.revealKey == key,
-               kept.revision == entry.revision, kept.footnoteKey == noteKey {
+            if !entry.isDirty, let j = old[entry.block.id], entries[j].length == entry.length, entries[j].revealKey == key,
+               entries[j].revision == entry.revision, entries[j].footnoteKey == noteKey {
+                var kept = entries[j]
                 kept.start = start
                 new.append(kept)
                 result.reused += 1
                 continue
             }
-            if !sourceMode, !entry.isDirty, let edit = entry.tableRowEdit, let prior = old[entry.block.id],
+            if !sourceMode, !entry.isDirty, let edit = entry.tableRowEdit, let j = old[entry.block.id], case let prior = entries[j],
                prior.revision == edit.baseRevision, prior.length + edit.lengthDelta == entry.length,
                prior.footnoteKey == noteKey,
                var patched = patchTableRows(entry: entry, prior: prior, edit: edit, start: start, key: key,
                                             rope: rope, reveal: reveal, footnotes: numbering) {
                 patched.start = start
-                patched.footnoteRefs = note?.refs ?? []
-                patched.footnoteDefs = note?.defs ?? []
-                patched.footnoteKey = noteKey
+                patched.notes = note
                 new.append(patched)
                 result.changedEntries.append(new.count - 1)
                 result.rebuilt += 1
@@ -186,14 +249,13 @@ public struct Projection: Sendable {
             }
             let blocks = sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == index.count - 1)
                 : build(entry: entry, start: start, rope: rope, reveal: reveal, footnotes: numbering,
-                        regionStart: note != nil && Self.isRegionStart(i, in: index))
+                        regionStart: note?.regionStart ?? false)
             var rows: [Int] = []
             if !sourceMode, Self.isCaretKey(key), case .table = entry.block.kind {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
             }
             new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks,
-                                      revision: entry.revision, revealedRows: rows, footnoteRefs: note?.refs ?? [],
-                                      footnoteDefs: note?.defs ?? [], footnoteKey: noteKey))
+                                      revision: entry.revision, revealedRows: rows, notes: note))
             result.changedEntries.append(new.count - 1)
             result.rebuilt += 1
         }

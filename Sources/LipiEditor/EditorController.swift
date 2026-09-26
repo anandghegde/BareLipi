@@ -77,6 +77,8 @@ public final class EditorController {
     // MARK: Document
 
     public var rope: LipiRope { buffer.rope }
+    /// The parsed document: top-level blocks with local ranges (counts, outline).
+    public var blockIndex: BlockIndex { parser.index }
     public var count: Int { buffer.count }
     public var string: String { buffer.rope.string }
     public var caret: Int { selection.head }

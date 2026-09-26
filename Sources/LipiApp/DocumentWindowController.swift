@@ -10,6 +10,9 @@ import LipiLayout
 public final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     public let editor: EditorView
     public let content: DocumentContentView
+    /// Sidebar, content and status bar (§6.8, §6.18).
+    public let chrome: DocumentChromeView
+    let counts: CountsModel
     public var controller: EditorController { editor.controller }
     /// Called when the viewport scrolls (restorable state).
     var onScroll: (() -> Void)?
@@ -18,8 +21,10 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         let (scroll, editor) = EditorHost.makeScrollView(controller: controller, theme: theme, frame: contentRect)
         self.editor = editor
         content = DocumentContentView(scrollView: scroll, frame: contentRect)
+        chrome = DocumentChromeView(content: content, frame: contentRect)
+        counts = CountsModel(controller: controller, bar: chrome.statusBar)
         let window = EditorHost.makeWindow(contentRect: contentRect)
-        window.contentView = content
+        window.contentView = chrome
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "BareLipi.document"
         window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
@@ -30,6 +35,16 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         EditorHost.useEightBitBacking(for: window, editor: editor)
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(clipScrolled(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        let previous = controller.onChange
+        controller.onChange = { [weak self] change in
+            previous?(change)
+            self?.editorDidChange(change)
+        }
+        counts.setNeedsUpdate(textChanged: true)
+    }
+
+    private func editorDidChange(_ change: EditorChange) {
+        counts.setNeedsUpdate(textChanged: change.textChanged)
     }
 
     @available(*, unavailable)

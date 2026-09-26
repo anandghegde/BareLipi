@@ -94,8 +94,8 @@ struct AppSettingsTests {
 @Suite("Settings: panes")
 @MainActor
 struct SettingsPanesTests {
-    @Test func windowHasEditingCountsImagesAndKeys() {
-        #expect(SettingsWindowController.makePanes().map(\.label) == ["Editing", "Counts", "Images", "Keys"])
+    @Test func windowHasEditingCountsImagesPrintAndKeys() {
+        #expect(SettingsWindowController.makePanes().map(\.label) == ["Editing", "Counts", "Images", "Print", "Keys"])
     }
 
     @Test func editingPaneWritesThrough() throws {

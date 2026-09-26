@@ -33,6 +33,7 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         [pane(EditorSettingsPane(), "Editing", "pencil"),
          pane(CountsSettingsPane(), "Counts", "textformat.123"),
          pane(ImagesSettingsPane(), "Images", "photo"),
+         pane(PrintSettingsPane(), "Print", "printer"),
          pane(KeysSettingsPane(), "Keys", "keyboard")]
     }
 

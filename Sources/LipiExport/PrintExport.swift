@@ -4,24 +4,76 @@ import LipiHighlight
 import LipiLayout
 import PDFKit
 
-/// Print and PDF export (P0-14, Phase 2): the HTML export's page in a
-/// light theme with print rules added (page margins, no clipped code or
-/// tables, headings kept with what follows), paginated by WebKit
-/// (`WebPDFRenderer`). The PDF export then gets an outline built from the
-/// document's headings (`PDFOutliner`).
+/// What Print and PDF export do with the document's local images.
+public enum PrintImageMode: String, Sendable, Hashable, CaseIterable {
+    /// Draw them (their bytes are embedded in the page WebKit lays out).
+    case embed
+    /// Leave them out; an image's alt text stands in its place.
+    case omit
+
+    public var title: String {
+        switch self {
+        case .embed: return "Include images"
+        case .omit: return "Leave out (alt text instead)"
+        }
+    }
+}
+
+/// Which palette Print and PDF export use.
+public enum PrintThemeMode: String, Sendable, Hashable, CaseIterable {
+    /// The window theme's light counterpart (Kari prints as Taalegari,
+    /// Neeli as Bili), without Increase Contrast.
+    case light
+    /// The window's theme as the editor shows it, dark backgrounds included.
+    case window
+
+    public var title: String {
+        switch self {
+        case .light: return "Light version of the window's theme"
+        case .window: return "Window's theme"
+        }
+    }
+}
+
+/// The Print and PDF choices (Settings → Print, the PDF save panel).
+public struct PrintOptions: Sendable, Hashable {
+    public var images: PrintImageMode
+    public var theme: PrintThemeMode
+    /// The document title at the head of each page.
+    public var header: Bool
+    /// "Page N of M" at the foot of each page.
+    public var footer: Bool
+
+    public init(images: PrintImageMode = .embed, theme: PrintThemeMode = .light, header: Bool = true, footer: Bool = true) {
+        self.images = images
+        self.theme = theme
+        self.header = header
+        self.footer = footer
+    }
+}
+
+/// Print and PDF export (P0-14, Phase 2): the HTML export's page with
+/// print rules added (page margins, no clipped code or tables, headings
+/// kept with what follows), paginated by WebKit (`WebPDFRenderer`), with a
+/// running header and footer (`PageDecoration`). The PDF export then gets
+/// an outline built from the document's headings (`PDFOutliner`).
 public struct PrintExport: Sendable {
     /// Page margins in points: top, sides, bottom (a little more at the
     /// foot, where the eye expects it).
     public static let margins = (top: 54.0, side: 54.0, bottom: 60.0)
 
     public var theme: Theme
+    public var options: PrintOptions
     public var exporter: HTMLExporter
 
-    /// `theme` is the window's theme; paper gets its light counterpart
-    /// (Kari prints as Taalegari, Neeli as Bili) without Increase Contrast.
-    public init(theme: Theme, highlighter: HighlightService? = .shared) {
-        self.theme = PrintExport.printTheme(for: theme)
-        exporter = HTMLExporter(theme: self.theme, highlighter: highlighter)
+    /// `theme` is the window's theme; by default paper gets its light
+    /// counterpart (Kari prints as Taalegari, Neeli as Bili) without
+    /// Increase Contrast. `syntax` are the opt-in syntaxes turned on.
+    public init(theme: Theme, options: PrintOptions = PrintOptions(), syntax: ParserOptions.Extensions = [],
+                highlighter: HighlightService? = .shared) {
+        self.theme = options.theme == .window ? theme : PrintExport.printTheme(for: theme)
+        self.options = options
+        exporter = HTMLExporter(theme: self.theme, syntax: syntax, highlighter: highlighter)
     }
 
     /// The light theme `theme` prints in.
@@ -30,15 +82,34 @@ public struct PrintExport: Sendable {
         return standard.isDark ? standard.pair.standard : standard
     }
 
-    /// The page to paginate, images embedded (the web view is given no file
-    /// access), and the image sources that were not found.
+    /// The page to paginate and the image sources that were not found.
+    /// Images are embedded (the web view is given no file access), or
+    /// replaced by their alt text when `options.images` is `.omit`.
     public func page(markdown: String, title: String, documentDirectory: URL?) -> (html: String, missingImages: [String]) {
-        // Embedding never writes beside `outputURL`; it only has to be a file URL.
-        let images = ImageExport(mode: .embed, documentDirectory: documentDirectory,
-                                 outputURL: (documentDirectory ?? URL(fileURLWithPath: NSTemporaryDirectory())).appendingPathComponent("print.html"))
-        let result = exporter.export(markdown: markdown, title: title, images: images)
-        return (PrintExport.addingPrintStyle(to: result.html), result.missingImages)
+        switch options.images {
+        case .embed:
+            // Embedding never writes beside `outputURL`; it only has to be a file URL.
+            let images = ImageExport(mode: .embed, documentDirectory: documentDirectory,
+                                     outputURL: (documentDirectory ?? URL(fileURLWithPath: NSTemporaryDirectory())).appendingPathComponent("print.html"))
+            let result = exporter.export(markdown: markdown, title: title, images: images)
+            return (addingPrintStyle(to: result.html), result.missingImages)
+        case .omit:
+            let html = exporter.page(body: PrintExport.replacingImagesWithAltText(exporter.body(markdown: markdown)), title: title)
+            return (addingPrintStyle(to: html), [])
+        }
     }
+
+    /// The running header and footer for a document titled `title`, and
+    /// the paper filled when the page is not printed on white; nil when
+    /// there is nothing to draw.
+    public func decoration(title: String) -> PageDecoration? {
+        PageDecoration(theme: theme, title: title, header: options.header, footer: options.footer, fillsPaper: !printsOnWhite)
+    }
+
+    /// Whether the paper stays white: the light counterpart prints on white
+    /// (as a light page reads on paper); the window's theme keeps its
+    /// background.
+    public var printsOnWhite: Bool { options.theme == .light }
 
     /// The document's headings, in order, for the PDF outline.
     public static func headings(markdown: String) -> [PDFOutliner.Heading] {
@@ -47,12 +118,17 @@ public struct PrintExport: Sendable {
         return TableOfContents(index: parser.index).items.map { PDFOutliner.Heading(level: $0.level, title: $0.title) }
     }
 
-    /// Rules for paper, after the theme's so they win.
-    public static var printCSS: String {
+    /// Rules for white paper, after the theme's so they win.
+    public static var printCSS: String { printCSS(themeBackground: false) }
+
+    /// Rules for paper, white or in the theme's background. WebKit paints
+    /// a page's background only inside its boxes, so for the theme's the
+    /// page is transparent and `PageDecoration` fills the paper under it.
+    public static func printCSS(themeBackground: Bool) -> String {
         let m = margins
         return """
         @page { margin: \(Int(m.top))pt \(Int(m.side))pt \(Int(m.bottom))pt; }
-        html, body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        html, body { background: \(themeBackground ? "transparent" : "#fff"); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         body { font-size: 11pt; line-height: 1.5; }
         .lipi-document { max-width: none; margin: 0; padding: 0; }
         h1, h2, h3, h4, h5, h6 { break-after: avoid; page-break-after: avoid; break-inside: avoid; }
@@ -65,15 +141,48 @@ public struct PrintExport: Sendable {
         img { max-width: 100%; height: auto; }
         a { text-decoration: none; }
         .footnote-backref { display: none; }
+        .image-alt { color: var(--lipi-muted); font-style: italic; }
         """
     }
 
-    /// `html` with `printCSS` in a second `<style>` at the end of `<head>`.
-    static func addingPrintStyle(to html: String) -> String {
-        let style = "<style media=\"print\">\n\(printCSS)\n</style>\n"
+    /// `html` with `printCSS` in a second `<style>` at the end of `<head>`,
+    /// for this export's paper.
+    func addingPrintStyle(to html: String) -> String {
+        PrintExport.addingPrintStyle(to: html, css: PrintExport.printCSS(themeBackground: !printsOnWhite))
+    }
+
+    static func addingPrintStyle(to html: String, css: String = printCSS) -> String {
+        let style = "<style media=\"print\">\n\(css)\n</style>\n"
         guard let head = html.range(of: "</head>") else { return style + html }
         var out = html
         out.insert(contentsOf: style, at: head.lowerBound)
+        return out
+    }
+}
+
+extension PrintExport {
+    /// `html` with each `<img …>` replaced by its alt text in a
+    /// `<span class="image-alt">`, or by nothing when it has none.
+    static func replacingImagesWithAltText(_ html: String) -> String {
+        guard html.contains("<img ") else { return html }
+        var out = ""
+        out.reserveCapacity(html.utf8.count)
+        var rest = html[...]
+        while let start = rest.range(of: "<img ") {
+            out += rest[..<start.lowerBound]
+            // Attribute values are escaped, so the first `>` ends the tag.
+            guard let end = rest[start.upperBound...].firstIndex(of: ">") else {
+                out += rest[start.lowerBound...]
+                return out
+            }
+            let tag = rest[start.lowerBound...end]
+            if let alt = tag.range(of: " alt=\""), let close = tag[alt.upperBound...].firstIndex(of: "\""),
+               alt.upperBound < close {
+                out += "<span class=\"image-alt\">\(tag[alt.upperBound..<close])</span>"
+            }
+            rest = rest[rest.index(after: end)...]
+        }
+        out += rest
         return out
     }
 }

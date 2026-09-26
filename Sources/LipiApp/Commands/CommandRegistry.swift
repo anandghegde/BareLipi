@@ -262,6 +262,7 @@ extension CommandRegistry {
         editor("format.link", #selector(EditorView.insertLink(_:)))
         editor("format.image", #selector(EditorView.insertImage(_:)))
         editor("format.footnote", #selector(EditorView.insertFootnote(_:)))
+        editor("format.showFootnote", #selector(EditorView.showFootnote(_:)))
         group = 1; submenu = "Heading"
         for (level, action) in [#selector(EditorView.setHeading1(_:)), #selector(EditorView.setHeading2(_:)), #selector(EditorView.setHeading3(_:)),
                                 #selector(EditorView.setHeading4(_:)), #selector(EditorView.setHeading5(_:)), #selector(EditorView.setHeading6(_:))].enumerated() {

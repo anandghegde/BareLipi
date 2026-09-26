@@ -131,6 +131,15 @@ public struct Renderer {
             marker = String(repeating: "#", count: level)
         } else if block.context.quoteDepth > 0, block.context.marker == nil {
             marker = nil
+        } else if let label = block.context.footnoteLabel {
+            // A definition: its number (or label) with the return link (§6.13).
+            marker = Self.footnoteMarker(label: label, number: block.context.footnoteNumber)
+            if block.context.footnoteRegionStart {
+                // The footnotes region starts with a short rule.
+                ctx.setFillColor(colors.border.cgColor)
+                let y = (box.minY - max(block.spacingBefore, 8) / 2).rounded()
+                ctx.fill(CGRect(x: box.minX, y: y, width: min(box.width, 160), height: 1))
+            }
         }
         guard let marker, block.cellCount > 0, let first = block.cell(0).lines.first else { return }
         let text = typesetter.attributedString(marker, role: .gutterMarker)
@@ -138,5 +147,11 @@ public struct Renderer {
         let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
         ctx.textPosition = CGPoint(x: box.minX - width - 8, y: box.minY + block.cellFrame(0).minY + first.baseline)
         CTLineDraw(line, ctx)
+    }
+
+    /// The gutter text of a footnote definition: `↩ 2.` (the arrow is the
+    /// return link to the first reference).
+    public static func footnoteMarker(label: String, number: Int?) -> String {
+        "\u{21A9}\u{FE0E} " + (number.map { "\($0)." } ?? "[\(label)]")
     }
 }

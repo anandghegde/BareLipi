@@ -22,6 +22,61 @@ public struct ProjectedEntry: Sendable {
     /// inline or escape); only kept for a table entry with a non-trivial
     /// reveal key.
     var revealedRows: [Int] = []
+    /// Normalized labels of the footnote references in the entry, in order,
+    /// and of the definitions it holds.
+    var footnoteRefs: [String] = []
+    var footnoteDefs: [String] = []
+    /// Hash of the footnote numbers the entry's blocks were built with.
+    var footnoteKey = 0
+}
+
+/// Footnote numbers in document order (§6.13): a label's number is the
+/// position of its first reference among the references that have a
+/// definition anywhere in the document.
+public struct FootnoteNumbering: Sendable, Equatable {
+    /// Normalized label → number (1-based).
+    public private(set) var numbers: [String: Int] = [:]
+    /// Normalized labels with a definition.
+    public private(set) var defined: Set<String> = []
+
+    public init() {}
+
+    init(refs: [[String]], defs: [[String]]) {
+        for d in defs { defined.formUnion(d) }
+        for list in refs {
+            for label in list where numbers[label] == nil && defined.contains(label) {
+                numbers[label] = numbers.count + 1
+            }
+        }
+    }
+
+    public var isEmpty: Bool { numbers.isEmpty && defined.isEmpty }
+
+    /// The number of `label` (as written), nil when nothing references it
+    /// or it has no definition.
+    public func number(for label: String) -> Int? { numbers[Self.normalize(label)] }
+
+    /// cmark's label matching: case-insensitive, runs of whitespace collapsed.
+    public static func normalize(_ label: String) -> String {
+        var simple = true
+        for b in label.utf8 where b >= 0x80 || b <= 0x20 || (b >= 0x41 && b <= 0x5A) { simple = false; break }
+        if simple { return label }
+        return label.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    }
+
+    /// Normalized labels of the footnote references and definitions in `block`.
+    public static func labels(in block: Block) -> (refs: [String], defs: [String]) {
+        var refs: [String] = [], defs: [String] = []
+        block.forEachBlock { b in
+            if case .footnoteDefinition(let label) = b.kind { defs.append(normalize(label)) }
+            for inline in b.inlines {
+                inline.forEachInline { i in
+                    if case .footnoteReference(let label) = i.kind { refs.append(normalize(label)) }
+                }
+            }
+        }
+        return (refs, defs)
+    }
 }
 
 public struct Projection: Sendable {
@@ -32,6 +87,8 @@ public struct Projection: Sendable {
     public private(set) var reveal = RevealSet()
     /// Bytes covered; equals the document length after `update`.
     public private(set) var length = 0
+    /// Footnote numbers as of the last `update`.
+    public private(set) var footnotes = FootnoteNumbering()
 
     public struct UpdateResult: Sendable, Equatable {
         public var rebuilt = 0
@@ -63,6 +120,39 @@ public struct Projection: Sendable {
         old.reserveCapacity(entries.count)
         for e in entries { old[e.id] = e }
 
+        // Footnotes: labels per entry (kept from the previous projection
+        // when the entry did not change), then the document's numbering.
+        var notes: [Int: (refs: [String], defs: [String], key: Int)] = [:]
+        var numbering = FootnoteNumbering()
+        if !sourceMode {
+            var refs: [[String]] = [], defs: [[String]] = [], at: [Int] = []
+            for i in index.entries.indices {
+                let entry = index.entries[i]
+                guard entry.hasBracket else { continue }
+                let labels: (refs: [String], defs: [String])
+                if !entry.isDirty, let kept = old[entry.block.id], kept.revision == entry.revision {
+                    labels = (kept.footnoteRefs, kept.footnoteDefs)
+                } else {
+                    labels = FootnoteNumbering.labels(in: entry.block)
+                }
+                guard !labels.refs.isEmpty || !labels.defs.isEmpty else { continue }
+                refs.append(labels.refs); defs.append(labels.defs); at.append(i)
+            }
+            if !at.isEmpty {
+                numbering = FootnoteNumbering(refs: refs, defs: defs)
+                for (k, i) in at.enumerated() {
+                    var h = Hasher()
+                    // Labels too, so an equal key after a table row edit means
+                    // the other rows' references keep their numbers.
+                    for r in refs[k] { h.combine(r); h.combine(numbering.numbers[r] ?? 0) }
+                    h.combine(-1)
+                    for d in defs[k] { h.combine(d); h.combine(numbering.numbers[d] ?? 0) }
+                    h.combine(Self.isRegionStart(i, in: index))
+                    notes[i] = (refs[k], defs[k], h.finalize() | 1)
+                }
+            }
+        }
+
         var result = UpdateResult()
         var new: [ProjectedEntry] = []
         new.reserveCapacity(index.count)
@@ -70,8 +160,10 @@ public struct Projection: Sendable {
             let entry = index.entries[i]
             let start = index.start(of: i)
             let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1) : revealKey(for: entry.block.id, reveal: reveal)
+            let note = notes.isEmpty ? nil : notes[i]
+            let noteKey = note?.key ?? 0
             if !entry.isDirty, var kept = old[entry.block.id], kept.length == entry.length, kept.revealKey == key,
-               kept.revision == entry.revision {
+               kept.revision == entry.revision, kept.footnoteKey == noteKey {
                 kept.start = start
                 new.append(kept)
                 result.reused += 1
@@ -79,9 +171,13 @@ public struct Projection: Sendable {
             }
             if !sourceMode, !entry.isDirty, let edit = entry.tableRowEdit, let prior = old[entry.block.id],
                prior.revision == edit.baseRevision, prior.length + edit.lengthDelta == entry.length,
+               prior.footnoteKey == noteKey,
                var patched = patchTableRows(entry: entry, prior: prior, edit: edit, start: start, key: key,
-                                            rope: rope, reveal: reveal) {
+                                            rope: rope, reveal: reveal, footnotes: numbering) {
                 patched.start = start
+                patched.footnoteRefs = note?.refs ?? []
+                patched.footnoteDefs = note?.defs ?? []
+                patched.footnoteKey = noteKey
                 new.append(patched)
                 result.changedEntries.append(new.count - 1)
                 result.rebuilt += 1
@@ -89,13 +185,15 @@ public struct Projection: Sendable {
                 continue
             }
             let blocks = sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == index.count - 1)
-                : build(entry: entry, start: start, rope: rope, reveal: reveal)
+                : build(entry: entry, start: start, rope: rope, reveal: reveal, footnotes: numbering,
+                        regionStart: note != nil && Self.isRegionStart(i, in: index))
             var rows: [Int] = []
             if !sourceMode, Self.isCaretKey(key), case .table = entry.block.kind {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
             }
             new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks,
-                                      revision: entry.revision, revealedRows: rows))
+                                      revision: entry.revision, revealedRows: rows, footnoteRefs: note?.refs ?? [],
+                                      footnoteDefs: note?.defs ?? [], footnoteKey: noteKey))
             result.changedEntries.append(new.count - 1)
             result.rebuilt += 1
         }
@@ -116,6 +214,7 @@ public struct Projection: Sendable {
         }
         entries = new
         length = index.length
+        footnotes = numbering
         self.reveal = reveal
         return result
     }
@@ -131,10 +230,21 @@ public struct Projection: Sendable {
         return h.finalize() | 2
     }
 
-    private func build(entry: BlockEntry, start: Int, rope: LipiRope, reveal: RevealSet) -> [DisplayBlock] {
+    /// A top-level footnote definition that does not follow another one.
+    private static func isRegionStart(_ i: Int, in index: BlockIndex) -> Bool {
+        guard case .footnoteDefinition = index.entries[i].block.kind else { return false }
+        if i == 0 { return true }
+        if case .footnoteDefinition = index.entries[i - 1].block.kind { return false }
+        return true
+    }
+
+    private func build(entry: BlockEntry, start: Int, rope: LipiRope, reveal: RevealSet,
+                       footnotes: FootnoteNumbering = FootnoteNumbering(), regionStart: Bool = false) -> [DisplayBlock] {
         var text = rope.string(in: start..<(start + entry.length))
         return text.withUTF8 { bytes in
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
+            projector.footnotes = footnotes
+            projector.footnoteRegionStart = regionStart
             return projector.project(entry.block, spanLength: entry.length)
         }
     }
@@ -146,7 +256,7 @@ public struct Projection: Sendable {
     /// every other cell is reused. Nil when the patch does not apply (the
     /// caller rebuilds the entry).
     private func patchTableRows(entry: BlockEntry, prior: ProjectedEntry, edit: TableRowEdit, start: Int, key: Int,
-                                rope: LipiRope, reveal: RevealSet) -> ProjectedEntry? {
+                                rope: LipiRope, reveal: RevealSet, footnotes: FootnoteNumbering) -> ProjectedEntry? {
         guard prior.blocks.count == 1, prior.blocks[0].table != nil, case .table = entry.block.kind,
               !Self.isCaretKey(key) || reveal.blocks.isEmpty else { return nil }
         if key != prior.revealKey && (key == 1 || prior.revealKey == 1) { return nil }
@@ -163,6 +273,7 @@ public struct Projection: Sendable {
         var text = rope.string(in: start..<(start + entry.length))
         let block: DisplayBlock? = text.withUTF8 { bytes in
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
+            projector.footnotes = footnotes
             return projector.patchTable(entry.block, old: prior.blocks[0], rows: rows.sorted(), editedRow: edit.row,
                                         lengthDelta: edit.lengthDelta, spanLength: entry.length)
         }
@@ -269,6 +380,10 @@ struct EntryProjector {
     var blocks: [DisplayBlock] = []
     /// Next local source byte not yet owned by a display block.
     var cursor = 0
+    /// Document footnote numbers: references show their number.
+    var footnotes = FootnoteNumbering()
+    /// The entry is a top-level definition starting a footnotes region.
+    var footnoteRegionStart = false
 
     init(bytes: UnsafeBufferPointer<UInt8>, entryStart: Int, preset: RevealPreset, reveal: RevealSet) {
         self.bytes = bytes
@@ -349,7 +464,12 @@ struct EntryProjector {
             }
         case .listItem, .footnoteDefinition:
             var inner = context
-            if case .footnoteDefinition(let label) = block.kind { inner.footnoteLabel = label }
+            if case .footnoteDefinition(let label) = block.kind {
+                inner.footnoteLabel = label
+                inner.footnoteNumber = footnotes.number(for: label)
+                inner.footnoteRegionStart = footnoteRegionStart
+                footnoteRegionStart = false
+            }
             let revealed = containerRevealed || isRevealed(block.id)
             if block.children.isEmpty {
                 emitEmptyLeaf(block, context: inner, revealed: revealed, firstLeafContainer: block)
@@ -362,6 +482,8 @@ struct EntryProjector {
                 first = nil
                 inner.marker = nil
                 inner.footnoteLabel = nil
+                inner.footnoteNumber = nil
+                inner.footnoteRegionStart = false
             }
         case .table(let alignments):
             emitTable(block, alignments: alignments, context: context, revealed: containerRevealed)
@@ -669,7 +791,7 @@ struct EntryProjector {
             emitContainer(inline, &builder, style: style.union(.strong))
         case .strikethrough:
             emitContainer(inline, &builder, style: style.union(.strikethrough))
-        case .footnoteReference:
+        case .footnoteReference(let label):
             let revealed = isInlineRevealed(inline.id)
             // `[^label]`
             let labelStart = min(r.lowerBound + 2, r.upperBound)
@@ -680,7 +802,12 @@ struct EntryProjector {
                 builder.copy(labelEnd..<r.upperBound, style.union(.syntax))
             } else {
                 builder.hide(r.lowerBound..<labelStart, .after)
-                builder.copy(labelStart..<labelEnd, style.union(.footnoteReference))
+                if let n = footnotes.number(for: label), labelStart < labelEnd {
+                    // The number assigned in document order stands in for the label.
+                    builder.replace(labelStart..<labelEnd, withBytes: Array(String(n).utf8), style: style.union(.footnoteReference))
+                } else {
+                    builder.copy(labelStart..<labelEnd, style.union(.footnoteReference))
+                }
                 builder.hide(labelEnd..<r.upperBound, .after)
             }
         case .link(_, _, let isAutolink):

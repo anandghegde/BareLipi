@@ -113,6 +113,12 @@ public struct BlockContext: Sendable, Hashable {
     public var marker: ListMarker? = nil
     /// Set on the first leaf of a footnote definition.
     public var footnoteLabel: String? = nil
+    /// The definition's number in document order of first reference (§6.13);
+    /// nil for a definition no reference uses.
+    public var footnoteNumber: Int? = nil
+    /// The first definition of a run of top-level definitions: the start of
+    /// a footnotes region, drawn with a rule above it.
+    public var footnoteRegionStart = false
     /// Any container this block sits in is loose (paragraph spacing applies).
     public var isLoose: Bool = false
     public init() {}
@@ -280,6 +286,7 @@ struct FNV1a {
             combine(m.task == nil ? 0 : m.task == .checked ? 2 : 1)
         } else { combine(-1) }
         if let f = c.footnoteLabel { combine(f) } else { combine(-1) }
+        combine(c.footnoteNumber ?? -1); combine(c.footnoteRegionStart ? 1 : 0)
     }
     mutating func combine(_ a: ColumnAlignment) {
         switch a {

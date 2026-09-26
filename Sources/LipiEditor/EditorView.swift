@@ -22,6 +22,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private var pendingKeystroke: (start: DispatchTime, pipeline: Double, signpost: OSSignpostIntervalState)?
     private var mouseAnchor: Int?
     private var linkPopover: LinkPopover?
+    /// The footnote popover and hover state (`FootnotePopover.swift`).
+    let footnoteState = FootnoteViewState()
+    private var hoverArea: NSTrackingArea?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
     /// Find and Replace state; its matches are highlighted while active.
@@ -111,6 +114,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         syncFrameHeight()
         needsDisplay = true
         postAccessibilityChange(textChanged: change.textChanged)
+        if change.textChanged, footnoteState.shown != nil { closeFootnote() }
         if change.viewportShift != 0, let clip = enclosingScrollView?.contentView {
             var origin = clip.bounds.origin
             origin.y += change.viewportShift
@@ -346,6 +350,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         .init("Math Block", "b", [.command, .option], #selector(insertMathBlock(_:))),
         .init("Horizontal Rule", "-", [.command, .option], #selector(insertThematicBreak(_:))),
         .init("Footnote", "r", [.command, .option], #selector(insertFootnote(_:))),
+        .init("Show Footnote", "\u{F701}", [.command, .option], #selector(showFootnote(_:))),
         .init("Exit Block", "\r", [.command], #selector(exitBlock(_:))),
         .init("Duplicate Block", "d", [.command, .shift], #selector(duplicateBlock(_:))),
     ]
@@ -529,6 +534,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.toggleTask(at: point) { return }
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift), handleFootnoteClick(at: point) { return }
         guard let offset = controller.sourceOffset(at: point) else { return }
         if event.clickCount == 2 {
             let word = controller.wordRange(at: offset)
@@ -553,6 +559,23 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     public override func mouseUp(with event: NSEvent) { mouseAnchor = nil }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        footnoteHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        footnoteHover(at: CGPoint(x: -1, y: -1))
+    }
 
     public override func resetCursorRects() {
         addCursorRect(bounds, cursor: .iBeam)

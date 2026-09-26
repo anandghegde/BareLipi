@@ -441,6 +441,36 @@ struct ProjectionFoldingTests {
         #expect(fresh.blocks.map(\.block.context) == projection.blocks.map(\.block.context))
     }
 
+    @Test("in-place edits that change labels, regions or [toc] match a fresh projection")
+    func footnoteInPlaceEdits() {
+        let text = "a[^x] b\n\n[^x]: X\n\nmid\n\n[^y]: Y\n\nlast\n"
+        var buffer = SourceBuffer(text)
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        var projection = Projection()
+        projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        func type(_ s: String, at offset: Int) {
+            var at = offset
+            for ch in s {
+                let delta = buffer.apply(Edit(replacing: at..<at, with: String(ch)))
+                parser.apply(delta, then: buffer.rope)
+                projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+                at += String(ch).utf8.count
+                var fresh = Projection()
+                fresh.update(index: parser.index, rope: buffer.rope, reveal: .none)
+                #expect(fresh.blocks.map(\.block.cells) == projection.blocks.map(\.block.cells))
+                #expect(fresh.blocks.map(\.block.context) == projection.blocks.map(\.block.context))
+                #expect(fresh.footnotes == projection.footnotes)
+                #expect((fresh.tableOfContents == nil) == (projection.tableOfContents == nil))
+            }
+        }
+        // "mid" becomes a definition: [^y] no longer starts a region.
+        type("[^z]: ", at: text.utf8.count - "mid\n\n[^y]: Y\n\nlast\n".utf8.count)
+        // A reference in the last paragraph, then a [toc] placeholder.
+        type(" [^y]", at: buffer.count - 1)
+        type("\n\n[toc]", at: buffer.count - 1)
+    }
+
     @Test("source mode shows footnote labels as written")
     func footnoteSourceMode() {
         let rope = LipiRope("t[^n]\n\n[^n]: x")

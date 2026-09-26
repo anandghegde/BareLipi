@@ -117,6 +117,8 @@ public struct Projection: Sendable {
     private var footnoteSequence: [EntryNotes] = []
     /// The kept entries' `notes` are up to date (false after source mode).
     private var notesComputed = false
+    /// The notes by entry position as of the last `update` (empty when none).
+    private var notesByEntry: [EntryNotes?] = []
 
     public struct UpdateResult: Sendable, Equatable {
         public var rebuilt = 0
@@ -156,7 +158,13 @@ public struct Projection: Sendable {
         // sequence of entries with labels, or a region start changed.
         var notes: [EntryNotes?] = []
         var numbering = footnotes
-        if !sourceMode {
+        // Typing: the same entries with one or a few edited in place and
+        // their labels unchanged keep every note and number, without the
+        // walk over all entries with labels below.
+        let kept = !sourceMode && notesComputed && entries.count == index.count ? keptNotes(index) : nil
+        if let kept {
+            notes = kept.notes
+        } else if !sourceMode {
             // Entries with labels in order; `fresh` notes still need a key.
             var found: [(i: Int, notes: EntryNotes, fresh: Bool)] = []
             var changed = false
@@ -225,7 +233,8 @@ public struct Projection: Sendable {
             numbering = FootnoteNumbering()
         }
 
-        let toc: TableOfContents? = !sourceMode && TableOfContents.isNeeded(in: index) ? TableOfContents(index: index) : nil
+        let tocPossible = kept.map { tableOfContents != nil || $0.toc } ?? true
+        let toc: TableOfContents? = !sourceMode && tocPossible && TableOfContents.isNeeded(in: index) ? TableOfContents(index: index) : nil
 
         var result = UpdateResult()
         var new: [ProjectedEntry] = []
@@ -291,6 +300,7 @@ public struct Projection: Sendable {
         entries = new
         length = index.length
         footnotes = numbering
+        notesByEntry = notes
         tableOfContents = toc
         self.reveal = reveal
         return result
@@ -313,6 +323,32 @@ public struct Projection: Sendable {
         var h = Hasher()
         h.combine(reveal)
         return h.finalize() | 2
+    }
+
+    /// The notes of the last update, when at most a few entries changed
+    /// in place (same count, same identities elsewhere) and their labels
+    /// and region starts, and their successors' region starts, did not;
+    /// with whether a changed entry is a `[toc]`. Nil otherwise.
+    private func keptNotes(_ index: BlockIndex) -> (notes: [EntryNotes?], toc: Bool)? {
+        guard notesByEntry.isEmpty || notesByEntry.count == index.count else { return nil }
+        let current = index.entries
+        var changed: [Int] = []
+        for i in current.indices
+        where current[i].isDirty || current[i].block.id != entries[i].id || current[i].revision != entries[i].revision {
+            changed.append(i)
+            if changed.count > 4 { return nil }
+        }
+        func prior(_ i: Int) -> EntryNotes? { notesByEntry.isEmpty ? nil : notesByEntry[i] }
+        var toc = false
+        for i in changed {
+            let e = current[i]
+            if e.hasBracket, e.block.isTableOfContents { toc = true }
+            let labels = e.hasBracket ? FootnoteNumbering.labels(in: e.block) : (refs: [], defs: [])
+            guard labels.refs == (prior(i)?.refs ?? []), labels.defs == (prior(i)?.defs ?? []),
+                  Self.isRegionStart(i, in: index) == (prior(i)?.regionStart ?? false) else { return nil }
+            if i + 1 < current.count, Self.isRegionStart(i + 1, in: index) != (prior(i + 1)?.regionStart ?? false) { return nil }
+        }
+        return (notesByEntry, toc)
     }
 
     /// A top-level footnote definition that does not follow another one.

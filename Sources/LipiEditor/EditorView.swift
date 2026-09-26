@@ -146,10 +146,34 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         setNeedsDisplay(controller.caretRect(forSource: controller.caret).insetBy(dx: -2, dy: -1))
     }
 
+    /// Sizes the view to the document plus two lines and, in typewriter
+    /// mode, the padding above and below that lets every line reach the
+    /// typewriter line.
     func syncFrameHeight() {
         let minimum = enclosingScrollView?.contentSize.height ?? 0
-        let height = max(controller.contentHeight + controller.lineHeight * 2 + typewriterPadding, minimum).rounded(.up)
+        let top = typewriterTopPadding
+        let height = max(controller.contentHeight + controller.lineHeight * 2 + typewriterPadding + top, minimum).rounded(.up)
+        let topChanged = abs(frame.minY + top) >= 0.5 || abs(bounds.minY + top) >= 0.5
+        if topChanged {
+            setFrameOrigin(NSPoint(x: frame.minX, y: -top))
+            setBoundsOrigin(NSPoint(x: bounds.minX, y: -top))
+        }
         if abs(frame.height - height) >= 0.5 { setFrameSize(NSSize(width: frame.width, height: height)) }
+        if topChanged {
+            needsDisplay = true
+            // Padding removed: bring a viewport that was above the text back in.
+            if let clip = enclosingScrollView?.contentView {
+                let origin = clip.constrainBoundsRect(clip.bounds).origin
+                if abs(origin.y - clip.bounds.minY) >= 0.5 { clip.scroll(to: origin) }
+                enclosingScrollView?.reflectScrolledClipView(clip)
+            }
+        }
+    }
+
+    public override func resize(withOldSuperviewSize oldSize: NSSize) {
+        super.resize(withOldSuperviewSize: oldSize)
+        // The minimum height and the typewriter padding follow the viewport.
+        syncFrameHeight()
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -412,7 +436,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private func scrollPage(_ direction: CGFloat) {
         guard let clip = enclosingScrollView?.contentView else { return }
         var origin = clip.bounds.origin
-        origin.y = max(0, min(origin.y + direction * (clip.bounds.height - controller.lineHeight), frame.height - clip.bounds.height))
+        origin.y = max(frame.minY, min(origin.y + direction * (clip.bounds.height - controller.lineHeight), frame.maxY - clip.bounds.height))
         clip.scroll(to: origin)
         enclosingScrollView?.reflectScrolledClipView(clip)
     }

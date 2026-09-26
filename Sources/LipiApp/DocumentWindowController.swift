@@ -129,8 +129,9 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         controller.prepare(CGRect(x: 0, y: y, width: clip.bounds.width, height: clip.bounds.height * 2))
         let height = max(editor.frame.height, controller.contentHeight + controller.lineHeight * 2)
         if editor.frame.height < height { editor.setFrameSize(NSSize(width: editor.frame.width, height: height.rounded(.up))) }
-        let maxY = max(0, editor.frame.height - clip.bounds.height)
-        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: max(0, min(y, maxY))))
+        // The editor's frame starts above y = 0 under typewriter padding.
+        let maxY = max(editor.frame.minY, editor.frame.maxY - clip.bounds.height)
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: max(editor.frame.minY, min(y, maxY))))
         scrollView.reflectScrolledClipView(clip)
     }
 }

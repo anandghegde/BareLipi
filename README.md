@@ -216,7 +216,7 @@ Phase 1 is the "Bare" MVP of PRD §10. Every item on the §10 list has now lande
   | --- | --- | --- |
   | P0-08 Outline sidebar | Done: current heading, jump, drag to reorder, promote / demote, headings inside lists and quotes, front-matter title | — |
   | P0-11 Command palette, keymap | Done: see [Commands and key bindings](#commands-and-key-bindings) | Context keys (Tab in tables and lists, Esc…) listed but not rebindable; Cmd-Ctrl-1…3 sidebars wait for Phase 2 |
-  | P0-12 Focus (F8), typewriter (F9), zen (Cmd-Ctrl-Shift-F) | Done: sentence or block focus, 120 ms fades (off under Reduce Motion), typewriter at 30–70 % with optional easing, zen restored on relaunch | Typewriter top padding (the first lines cannot reach the set position); Settings UI for the position |
+  | P0-12 Focus (F8), typewriter (F9), zen (Cmd-Ctrl-Shift-F) | Done: sentence or block focus, 120 ms fades (off under Reduce Motion), typewriter at 30–70 % with optional easing, padded above and below so the first and last lines reach the set position (the editor's frame and bounds start above y = 0, so document and clip coordinates are unchanged; the padding goes with the mode), zen restored on relaunch; Settings → Editing sets the focus scope, the typewriter line (slider, 5 % steps) and easing, live in open windows | — |
   | P0-13 Tasks, footnotes, front matter | Done: footnote numbering, popover, jump and return; YAML / TOML front matter (vendored Yams 6.2.2, TOMLKit 0.6.0) with malformed warnings; live `[toc]`; `{#id .class}`; emoji shortcodes and `:name` completion | Sub / superscript and highlight are opt-in under View › Markdown Extensions, not always on |
   | P0-18 Counts and status bar | Done, with Settings → Counts (reading speed, CJK by character, code, math) | — |
   | P0-20 Accessibility | Done: VoiceOver reads the projected text with heading and link attributes, islands (images, tables, code) are children, display options followed | A real VoiceOver pass for the exit check |
@@ -227,7 +227,7 @@ Phase 1 is the "Bare" MVP of PRD §10. Every item on the §10 list has now lande
 
   Keystroke cost: the accessibility and syntax work made typing 9–18 % slower in A/B release runs (plain ~470 → ~537 µs, footnotes ~825 → ~910 µs, emoji ~500 → ~592 µs, mostly colour-emoji drawing), with no single hotspot in a profile. Still well inside budget, but worth another look.
 
-  Left in Phase 1: the light / dark export option; HTML export of `[toc]`, emoji and `{#id}`; typewriter top padding and its Settings UI; Print on Cmd-Opt-P (with PDF, P0-14 Phase 2); the launch budget; and the exit checks.
+  Left in Phase 1: the light / dark export option; HTML export of `[toc]`, emoji and `{#id}`; Print on Cmd-Opt-P (with PDF, P0-14 Phase 2); the launch budget; and the exit checks.
 
   Perf: after the second round of merges, `LIPI_PERF_GATE=1` (release, load average ~5) passes every row but `open.tables-10kx10`. The emoji shortcode pass had added ~20 ms to that open by copying every table cell's bytes; it now skips text without two colons, and alternating runs put it back at the pre-merge 121–125 ms. That is still above the 102 ms baseline recorded on a quiet machine, and so is the pre-merge build today, so the gate needs a run on an idle machine, then `LIPI_PERF_RECORD=1` for the new rows.
 

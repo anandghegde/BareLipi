@@ -230,10 +230,13 @@ extension CommandRegistry {
         submenu = "Revert To"
         add("file.revertToSaved", "Last Saved Version", #selector(NSDocument.revertToSaved(_:)))
         add("file.browseVersions", "Browse All Versions…", #selector(NSDocument.browseVersions(_:)))
-        // HTML export is Phase 1 of P0-14; PDF and Print (Cmd-Opt-P) arrive in Phase 2 (§6.13).
+        // P0-14: HTML export (Phase 1), PDF and Print (Phase 2; Cmd-Opt-P, as
+        // the BareLipi preset keeps Cmd-P for Quick Open).
         group = 2; submenu = "Export"
         add("file.exportHTML", "HTML…", #selector(LipiDocument.exportHTML(_:)), "Cmd-Shift-E")
-        submenu = nil
+        add("file.exportPDF", "PDF…", #selector(LipiDocument.exportPDF(_:)))
+        submenu = nil; group = 3
+        add("file.print", "Print…", #selector(LipiDocument.printMarkdown(_:)), "Cmd-Opt-P")
 
         category = "Edit"; group = 0
         add("edit.undo", "Undo", #selector(EditorView.undo(_:)), "Cmd-Z")

@@ -10,16 +10,23 @@ import LipiLayout
 public final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     public let editor: EditorView
     public let content: DocumentContentView
+    /// Sidebar, content and status bar (§6.8, §6.18).
+    public let chrome: DocumentChromeView
+    let counts: CountsModel
     public var controller: EditorController { editor.controller }
     /// Called when the viewport scrolls (restorable state).
     var onScroll: (() -> Void)?
+    /// What zen mode hid and must put back (§6.12); nil outside zen mode.
+    var zenRestore: ZenRestore?
 
     public init(controller: EditorController, theme: Theme, contentRect: NSRect = NSRect(x: 0, y: 0, width: 1100, height: 760)) {
         let (scroll, editor) = EditorHost.makeScrollView(controller: controller, theme: theme, frame: contentRect)
         self.editor = editor
         content = DocumentContentView(scrollView: scroll, frame: contentRect)
+        chrome = DocumentChromeView(content: content, frame: contentRect)
+        counts = CountsModel(controller: controller, bar: chrome.statusBar)
         let window = EditorHost.makeWindow(contentRect: contentRect)
-        window.contentView = content
+        window.contentView = chrome
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "BareLipi.document"
         window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
@@ -30,6 +37,17 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         EditorHost.useEightBitBacking(for: window, editor: editor)
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(clipScrolled(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        let previous = controller.onChange
+        controller.onChange = { [weak self] change in
+            previous?(change)
+            self?.editorDidChange(change)
+        }
+        counts.setNeedsUpdate(textChanged: true)
+    }
+
+    private func editorDidChange(_ change: EditorChange) {
+        counts.setNeedsUpdate(textChanged: change.textChanged)
+        if let outline = chrome.sidebar as? OutlineSidebar { outline.setNeedsUpdate(textChanged: change.textChanged) }
     }
 
     @available(*, unavailable)
@@ -59,13 +77,20 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         let anchor = controller.sourceOffset(at: CGPoint(x: controller.layout.textOrigin + 1, y: visible.minY + 1)) ?? 0
         let lineTop = controller.caretRect(forSource: anchor).minY
         let selection = controller.selection
-        return RestorableEditorState(anchor: selection.anchor, head: selection.head, scrollAnchor: anchor,
-                                     scrollOffset: Double(visible.minY - lineTop))
+        var state = RestorableEditorState(anchor: selection.anchor, head: selection.head, scrollAnchor: anchor,
+                                          scrollOffset: Double(visible.minY - lineTop))
+        state.showsOutline = zenRestore?.outline ?? isOutlineVisible
+        state.focusMode = editor.focusMode
+        state.typewriter = editor.typewriterMode
+        return state
     }
 
     /// Puts the caret, selection and viewport back.
     public func apply(_ state: RestorableEditorState) {
         let s = state.clamped(to: controller.count)
+        if let shows = s.showsOutline, shows != isOutlineVisible { setOutlineVisible(shows, focus: false) }
+        if let focus = s.focusMode { editor.focusMode = focus }
+        if let typewriter = s.typewriter { editor.typewriterMode = typewriter }
         controller.moveCaret(to: s.anchor)
         if s.head != s.anchor { controller.moveCaret(to: s.head, extend: true) }
         let lineTop = controller.caretRect(forSource: s.scrollAnchor).minY

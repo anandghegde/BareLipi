@@ -83,13 +83,13 @@ public final class EditorController {
     // MARK: Document
 
     public var rope: LipiRope { buffer.rope }
+    /// The parsed document: top-level blocks with local ranges (counts, outline).
+    public var blockIndex: BlockIndex { parser.index }
     public var count: Int { buffer.count }
     public var string: String { buffer.rope.string }
     public var caret: Int { selection.head }
     public var theme: Theme { typesetter.scale.theme }
     public var zoom: CGFloat { typesetter.scale.zoom }
-    /// The parser's block index (search in rendered text re-projects it).
-    public var blockIndex: BlockIndex { parser.index }
 
     /// Nil when editing is allowed; otherwise a no-op change after telling
     /// `onRefusedEdit`.
@@ -201,6 +201,7 @@ public final class EditorController {
 
     /// Steps 1–3: buffer, parser, caret. Leaves `marked` to the caller.
     private func applyEdit(_ range: Range<Int>, _ text: String, caretAfter: Int?) -> Delta {
+        blockSelectionRange = nil
         let delta = buffer.apply(Edit(replacing: range, with: text))
         parser.apply(delta, then: buffer.rope)
         selection = SelectionModel(caret: caretAfter ?? (range.lowerBound + text.utf8.count))
@@ -219,6 +220,8 @@ public final class EditorController {
             closeTypingGroup()
             return applyPendingToggle(change)
         }
+        // §6.1.5 Tables: a literal `|` typed in a cell is written `\|`.
+        let text = text == "|" && mode == .hybrid && commands.escapesPipe ? "\\|" : text
         let single = text.utf8.count <= 4 && !text.contains("\n") && !text.contains("\r")
         guard single else {
             closeTypingGroup()
@@ -250,8 +253,10 @@ public final class EditorController {
     @discardableResult
     public func insertNewline() -> EditorChange {
         if marked != nil { _ = unmarkText() }
+        // Enter in a block selection re-enters the block (§6.1.4).
+        if let r = blockSelection { return moveCaret(to: r.lowerBound) }
         closeTypingGroup()
-        if let plan = commands.smartNewline() { return perform(plan) }
+        if let plan = commands.tableNewline() ?? commands.smartNewline() { return perform(plan) }
         let eol = CommandDocument(rope: buffer.rope, index: parser.index).eol(near: selection.range.lowerBound)
         return replace(selection.range, with: eol)
     }
@@ -260,6 +265,7 @@ public final class EditorController {
     /// halves of an empty auto-paired pair).
     @discardableResult
     public func deleteBackward() -> EditorChange {
+        if let r = blockSelection { return perform(commands.deleteBlock(r)) }
         if !selection.isEmpty { closeTypingGroup(); return replace(selection.range, with: "") }
         let caret = selection.head
         guard caret > 0 else { return refresh(textChanged: false, started: DispatchTime.now()) }
@@ -277,6 +283,7 @@ public final class EditorController {
     /// Deletes the selection, or the grapheme cluster after the caret.
     @discardableResult
     public func deleteForward() -> EditorChange {
+        if let r = blockSelection { return perform(commands.deleteBlock(r)) }
         if !selection.isEmpty { closeTypingGroup(); return replace(selection.range, with: "") }
         let caret = selection.head
         guard caret < buffer.count else { return refresh(textChanged: false, started: DispatchTime.now()) }
@@ -362,7 +369,15 @@ public final class EditorController {
 
     // MARK: Commands (§6.1.5)
 
-    private var commands: MarkdownCommands {
+    /// Focus mode's scope (§6.12): the innermost selectable block around
+    /// the caret (a paragraph, heading, list item, table or code block);
+    /// nil between blocks.
+    public var focusScope: Range<Int>? {
+        let c = commands
+        return c.selectableBlocks(at: caret).first.map(c.blockRange)
+    }
+
+    var commands: MarkdownCommands {
         MarkdownCommands(rope: buffer.rope, index: parser.index, selection: selection, settings: settings)
     }
 
@@ -375,7 +390,14 @@ public final class EditorController {
         if marked != nil { marked = nil }
         closeTypingGroup()
         pairClosers.removeAll()
-        guard !plan.edits.isEmpty else { return refresh(textChanged: false, started: started) }
+        blockSelectionRange = nil
+        let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
+        guard !plan.edits.isEmpty else {
+            // A pure selection change (table cell navigation, block selection).
+            selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
+            lastTypingCaret = selection.head
+            return refresh(textChanged: false, started: started)
+        }
         buffer.beginUndoGroup(selection: undoSelection)
         let ordered = plan.edits.sorted {
             $0.range.lowerBound.byte != $1.range.lowerBound.byte ? $0.range.lowerBound.byte > $1.range.lowerBound.byte
@@ -383,7 +405,6 @@ public final class EditorController {
         }
         for edit in ordered { parser.apply(buffer.apply(edit)) }
         parser.reparse(buffer.rope)
-        let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
         selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
         buffer.endUndoGroup(selection: undoSelection)
         lastTypingCaret = selection.head
@@ -414,6 +435,20 @@ public final class EditorController {
     @discardableResult
     public func insertLink(label: String? = nil, destination: String = "", title: String? = nil) -> EditorChange {
         run(commands.link(label: label, destination: destination, title: title))
+    }
+
+    /// What the Cmd-K popover starts from: the link under the selection
+    /// (label, destination, title), or the selected text as the label and
+    /// `pasteboard` as the destination when it is a URL.
+    public func linkDraft(pasteboard: String? = nil) -> LinkDraft {
+        commands.linkDraft(pasteboard: pasteboard)
+    }
+
+    /// Writes the popover's link over `draft.range` (one undo step).
+    @discardableResult
+    public func commitLink(_ draft: LinkDraft) -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        return perform(commands.commitLink(draft))
     }
 
     /// Cmd-Ctrl-I: `![alt](path)` over the selection.
@@ -459,24 +494,83 @@ public final class EditorController {
         return run(commands.hardBreak())
     }
 
-    /// Tab: indents a list item when the caret is at its content start,
-    /// otherwise types a tab.
+    /// Tab: the next table cell (a new row after the last one), indents a
+    /// list item when the caret is at its content start, otherwise types a tab.
     @discardableResult
     public func insertTab() -> EditorChange {
+        if marked == nil, let plan = commands.tableTab(backward: false) { return perform(plan) }
         if selection.isEmpty, !isAtItemStart { return insert("\t") }
         return indentListItem()
     }
 
-    /// Shift-Tab: outdents a list item when the caret is at its content start.
+    /// Shift-Tab: the previous table cell, or outdents a list item when the
+    /// caret is at its content start.
     @discardableResult
     public func insertBacktab() -> EditorChange {
+        if marked == nil, let plan = commands.tableTab(backward: true) { return perform(plan) }
         if selection.isEmpty, !isAtItemStart { return refresh(textChanged: false, started: DispatchTime.now()) }
         return outdentListItem()
+    }
+
+    /// Opt-Enter: `<br>` inside a table cell, otherwise Enter.
+    @discardableResult
+    public func insertCellLineBreak() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        if let plan = commands.tableLineBreak() { return perform(plan) }
+        return insertNewline()
     }
 
     private var isAtItemStart: Bool {
         let line = CommandDocument(rope: buffer.rope, index: parser.index).prefix(ofLineAt: selection.head)
         return line.hasMarker && selection.head >= line.markerEnd && selection.head <= line.contentStart
+    }
+
+    // MARK: Block selection (§6.1.4)
+
+    private var blockSelectionRange: Range<Int>?
+
+    /// The selected block's source while the selection is a block
+    /// selection (`Esc`); nil once the selection or the text changes.
+    public var blockSelection: Range<Int>? {
+        guard let r = blockSelectionRange, selection.anchor == r.lowerBound, selection.head == r.upperBound else { return nil }
+        return r
+    }
+
+    /// Esc: selects the block around the selection as one unit; again, the
+    /// block around that. No-op outside blocks.
+    @discardableResult
+    public func selectEnclosingBlock() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        guard let r = commands.expandBlockSelection(from: blockSelection) else {
+            closeTypingGroup()
+            return refresh(textChanged: false, started: DispatchTime.now())
+        }
+        blockSelectionRange = r
+        return select(r)
+    }
+
+    /// Cmd-Shift-D: duplicates the selected block (or the block around the
+    /// caret) and selects the copy.
+    @discardableResult
+    public func duplicateBlock() -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        guard let r = blockSelection ?? commands.expandBlockSelection(from: nil),
+              let plan = commands.duplicateBlock(r) else { return run(nil) }
+        let change = perform(plan)
+        blockSelectionRange = selection.range
+        return change
+    }
+
+    /// Opt-Up / Opt-Down in a block selection: moves the block past its
+    /// previous or next sibling. Returns false outside a block selection.
+    @discardableResult
+    public func moveBlock(up: Bool) -> Bool {
+        guard let r = blockSelection else { return false }
+        if let plan = commands.moveBlock(r, up: up) {
+            perform(plan)
+            blockSelectionRange = selection.range
+        }
+        return true
     }
 
     // MARK: Auto-pair

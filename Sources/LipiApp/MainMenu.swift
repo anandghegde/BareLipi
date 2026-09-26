@@ -37,6 +37,10 @@ public enum MainMenu {
         return item
     }
 
+    private static func functionKey(_ key: Int) -> String {
+        String(Character(UnicodeScalar(UInt16(key))!))
+    }
+
     private static func appMenu(_ name: String) -> NSMenu {
         let menu = NSMenu(title: name)
         menu.addItem(item("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
@@ -120,6 +124,7 @@ public enum MainMenu {
             #selector(EditorView.toggleStrong(_:)), #selector(EditorView.toggleEmphasis(_:)),
             #selector(EditorView.toggleStrikethrough(_:)), #selector(EditorView.toggleCodeSpan(_:)),
             #selector(EditorView.insertLink(_:)), #selector(EditorView.insertImage(_:)),
+            #selector(EditorView.insertFootnote(_:)),
         ]
         let headings: [Selector] = [
             #selector(EditorView.setHeading1(_:)), #selector(EditorView.setHeading2(_:)), #selector(EditorView.setHeading3(_:)),
@@ -135,7 +140,7 @@ public enum MainMenu {
         let blocks: [Selector] = [
             #selector(EditorView.toggleBlockQuote(_:)), #selector(EditorView.insertCodeFence(_:)),
             #selector(EditorView.insertMathBlock(_:)), #selector(EditorView.insertThematicBreak(_:)),
-            #selector(EditorView.exitBlock(_:)),
+            #selector(EditorView.exitBlock(_:)), #selector(EditorView.duplicateBlock(_:)),
         ]
         for action in inline { menu.addItem(editorItem(action)) }
         menu.addItem(.separator())
@@ -164,7 +169,21 @@ public enum MainMenu {
         let menu = NSMenu(title: "View")
         menu.addItem(editorItem(#selector(EditorView.toggleSourceMode(_:))))
         menu.addItem(.separator())
-        // Reveal presets and zoom go here when EditorView implements them.
+        menu.addItem(item("Outline", #selector(DocumentWindowController.toggleOutline(_:)), "2", [.command, .control]))
+        menu.addItem(.separator())
+        menu.addItem(item("Focus Mode", #selector(EditorView.toggleFocusMode(_:)), functionKey(NSF8FunctionKey), [.function]))
+        menu.addItem(item("Typewriter Mode", #selector(EditorView.toggleTypewriterMode(_:)), functionKey(NSF9FunctionKey), [.function]))
+        menu.addItem(item("Zen Mode", #selector(DocumentWindowController.toggleZenMode(_:)), "f", [.command, .control, .shift]))
+        menu.addItem(.separator())
+        menu.addItem(item("Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "="))
+        let zoomInPlus = item("Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "+")
+        zoomInPlus.isHidden = true
+        zoomInPlus.allowsKeyEquivalentWhenHidden = true
+        menu.addItem(zoomInPlus)
+        menu.addItem(item("Zoom Out", #selector(DocumentWindowController.zoomOut(_:)), "-"))
+        menu.addItem(item("Actual Size", #selector(DocumentWindowController.resetZoom(_:)), "0"))
+        menu.addItem(.separator())
+        // Reveal presets go here when EditorView implements them.
         menu.addItem(item("Show Tab Bar", #selector(NSWindow.toggleTabBar(_:))))
         menu.addItem(item("Show All Tabs", #selector(NSWindow.toggleTabOverview(_:)), "\\", [.command, .shift]))
         menu.addItem(.separator())

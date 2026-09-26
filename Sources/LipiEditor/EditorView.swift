@@ -20,6 +20,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private var hasDrawn = false
     private var pendingKeystroke: (start: DispatchTime, pipeline: Double, signpost: OSSignpostIntervalState)?
     private var mouseAnchor: Int?
+    private var linkPopover: LinkPopover?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
     /// Find and Replace state; its matches are highlighted while active.
@@ -27,6 +28,16 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     /// Stores pasted and dropped images and picks the paths links use
     /// (the document's `AssetStore`). Without one, images are not accepted.
     public weak var imageHandler: EditorImageHandler?
+    /// Focus mode (§6.12, F8): blocks other than the caret's are dimmed.
+    public var focusMode = false { didSet { needsDisplay = true } }
+    /// Typewriter mode (§6.12, F9): the caret line stays at mid-height.
+    public var typewriterMode = false {
+        didSet {
+            syncFrameHeight()
+            if typewriterMode { centerCaret() }
+        }
+    }
+    var isMouseSelecting: Bool { mouseAnchor != nil }
 
     public init(controller: EditorController, frame: NSRect = NSRect(x: 0, y: 0, width: 800, height: 600)) {
         self.controller = controller
@@ -65,7 +76,11 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
             clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
             enclosingScrollView?.reflectScrolledClipView(clip)
         }
-        scrollCaretToVisible(change.caretRect)
+        if typewriterMode, !isMouseSelecting {
+            centerCaret(change.caretRect)
+        } else {
+            scrollCaretToVisible(change.caretRect)
+        }
     }
 
     private func scrollCaretToVisible(_ rect: CGRect) {
@@ -78,9 +93,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         setNeedsDisplay(controller.caretRect(forSource: controller.caret).insetBy(dx: -2, dy: -1))
     }
 
-    private func syncFrameHeight() {
+    func syncFrameHeight() {
         let minimum = enclosingScrollView?.contentSize.height ?? 0
-        let height = max(controller.contentHeight + controller.lineHeight * 2, minimum).rounded(.up)
+        let height = max(controller.contentHeight + controller.lineHeight * 2 + typewriterPadding, minimum).rounded(.up)
         if abs(frame.height - height) >= 0.5 { setFrameSize(NSSize(width: frame.width, height: height)) }
     }
 
@@ -166,12 +181,23 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         controller.draw(in: ctx, dirty: dirty)
+        if let block = controller.blockSelection {
+            // Block selection ring (§6.1.4) around the whole block.
+            let ring = controller.rects(forSource: block, visible: visibleRect.union(dirty)).reduce(CGRect.null) { $0.union($1) }
+            if !ring.isNull, ring.insetBy(dx: -6, dy: -4).intersects(dirty) {
+                ctx.setStrokeColor(colors.caret.cgColor)
+                ctx.setLineWidth(1.5)
+                ctx.addPath(CGPath(roundedRect: ring.insetBy(dx: -4, dy: -3), cornerWidth: 4, cornerHeight: 4, transform: nil))
+                ctx.strokePath()
+            }
+        }
         if let marked = controller.marked {
             ctx.setFillColor(colors.ink.cgColor)
             for rect in controller.rects(forSource: marked.range, visible: dirty) {
                 ctx.fill(CGRect(x: rect.minX, y: rect.maxY - 2, width: max(rect.width, 2), height: 1.5))
             }
         }
+        if focusMode { dimOutsideFocus(in: ctx, dirty: dirty) }
         let focused = alwaysShowsCaret || window?.firstResponder === self
         if focused, caret.visible, selection.isEmpty || controller.hasMarkedText {
             var rect = controller.caretRect(forSource: controller.caret)
@@ -195,6 +221,13 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if !controller.hasMarkedText, mods == .shift, event.keyCode == 36 || event.keyCode == 76 {
             controller.insertHardBreak()
+            return
+        }
+        if mods == .option, event.keyCode == 126 || event.keyCode == 125, controller.moveBlock(up: event.keyCode == 126) {
+            return
+        }
+        if !controller.hasMarkedText, mods == .option, event.keyCode == 36 || event.keyCode == 76 {
+            controller.insertCellLineBreak()
             return
         }
         if mods.contains(.command), performEditorKeyEquivalent(event) { return }
@@ -228,7 +261,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private static let usKeys: [UInt16: String] = [
-        32: "u", 31: "o", 7: "x", 12: "q", 8: "c", 11: "b", 27: "-", 24: "=", 34: "i",
+        32: "u", 31: "o", 7: "x", 12: "q", 8: "c", 11: "b", 27: "-", 24: "=", 34: "i", 15: "r",
     ]
 
     /// Every editor command with its key equivalent (§6.1.5, §6.2), for the
@@ -260,7 +293,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         .init("Code Block", "c", [.command, .option], #selector(insertCodeFence(_:))),
         .init("Math Block", "b", [.command, .option], #selector(insertMathBlock(_:))),
         .init("Horizontal Rule", "-", [.command, .option], #selector(insertThematicBreak(_:))),
+        .init("Footnote", "r", [.command, .option], #selector(insertFootnote(_:))),
         .init("Exit Block", "\r", [.command], #selector(exitBlock(_:))),
+        .init("Duplicate Block", "d", [.command, .shift], #selector(duplicateBlock(_:))),
     ]
 
     public override func doCommand(by selector: Selector) {
@@ -300,6 +335,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(NSResponder.insertTab(_:)): controller.insertTab()
         case #selector(NSResponder.insertBacktab(_:)): controller.insertBacktab()
         case #selector(NSResponder.selectAll(_:)): controller.selectAll()
+        case #selector(NSResponder.cancelOperation(_:)): controller.selectEnclosingBlock()
         case #selector(NSResponder.pageDown(_:)), #selector(NSResponder.scrollPageDown(_:)): scrollPage(1)
         case #selector(NSResponder.pageUp(_:)), #selector(NSResponder.scrollPageUp(_:)): scrollPage(-1)
         default: super.doCommand(by: selector)
@@ -325,12 +361,33 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         controller.toggleSourceMode(anchor: anchor)
     }
     @objc public func toggleStrong(_ sender: Any?) { controller.toggleStrong() }
+    /// Cmd-Shift-D (§6.1.4).
+    @objc public func duplicateBlock(_ sender: Any?) { controller.duplicateBlock() }
+    /// Esc (§6.1.4): select the enclosing block; again to widen.
+    @objc public func selectEnclosingBlock(_ sender: Any?) { controller.selectEnclosingBlock() }
     @objc public func toggleEmphasis(_ sender: Any?) { controller.toggleEmphasis() }
     @objc public func toggleStrikethrough(_ sender: Any?) { controller.toggleStrikethrough() }
     @objc public func toggleCodeSpan(_ sender: Any?) { controller.toggleCodeSpan() }
-    /// Cmd-K quick form: `[selection]()` with the caret in the parentheses.
-    /// A popover can call `EditorController.insertLink(label:destination:title:)`.
-    @objc public func insertLink(_ sender: Any?) { controller.insertLink() }
+    /// Cmd-K: the link popover at the selection, prefilled from the link
+    /// under the caret or the selection and a pasteboard URL. Without a
+    /// window (tests, bench) it falls back to `[selection]()`.
+    @objc public func insertLink(_ sender: Any?) {
+        guard window != nil else { controller.insertLink(); return }
+        let draft = controller.linkDraft(pasteboard: NSPasteboard.general.string(forType: .string))
+        let rects = controller.rects(forSource: draft.range, visible: visibleRect)
+        var anchor = rects.reduce(CGRect.null) { $0.union($1) }
+        if anchor.isNull || draft.range.isEmpty { anchor = controller.caretRect(forSource: draft.range.lowerBound) }
+        linkPopover?.close()
+        let popover = LinkPopover(draft: draft, commit: { [weak self] d in
+            self?.controller.commitLink(d)
+        }, onClose: { [weak self] in
+            guard let self else { return }
+            self.linkPopover = nil
+            self.window?.makeFirstResponder(self)
+        })
+        linkPopover = popover
+        popover.show(relativeTo: anchor.insetBy(dx: 0, dy: -2), of: self)
+    }
     /// Cmd-Ctrl-I: asks for an image file, then inserts `![selection](path)`.
     @objc public func insertImage(_ sender: Any?) {
         let panel = NSOpenPanel()
@@ -359,6 +416,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     @objc public func insertMathBlock(_ sender: Any?) { controller.insertMathBlock() }
     @objc public func insertThematicBreak(_ sender: Any?) { controller.insertThematicBreak() }
     @objc public func exitBlock(_ sender: Any?) { controller.exitBlock() }
+    @objc public func insertFootnote(_ sender: Any?) { controller.insertFootnote() }
     @objc public func insertHardBreak(_ sender: Any?) { controller.insertHardBreak() }
 
     @objc public func undo(_ sender: Any?) { controller.undo() }
@@ -397,6 +455,12 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(toggleSourceMode(_:)):
             item.state = controller.mode == .source ? .on : .off
             return true
+        case #selector(toggleFocusMode(_:)):
+            item.state = focusMode ? .on : .off
+            return true
+        case #selector(toggleTypewriterMode(_:)):
+            item.state = typewriterMode ? .on : .off
+            return true
         default: return true
         }
     }
@@ -412,6 +476,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.toggleTask(at: point) { return }
         guard let offset = controller.sourceOffset(at: point) else { return }
         if event.clickCount == 2 {
             let word = controller.wordRange(at: offset)

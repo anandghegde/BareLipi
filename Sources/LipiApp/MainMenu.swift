@@ -157,7 +157,15 @@ public enum MainMenu {
         menu.addItem(.separator())
         menu.addItem(item("Outline", #selector(DocumentWindowController.toggleOutline(_:)), "2", [.command, .control]))
         menu.addItem(.separator())
-        // Reveal presets and zoom go here when EditorView implements them.
+        menu.addItem(item("Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "="))
+        let zoomInPlus = item("Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "+")
+        zoomInPlus.isHidden = true
+        zoomInPlus.allowsKeyEquivalentWhenHidden = true
+        menu.addItem(zoomInPlus)
+        menu.addItem(item("Zoom Out", #selector(DocumentWindowController.zoomOut(_:)), "-"))
+        menu.addItem(item("Actual Size", #selector(DocumentWindowController.resetZoom(_:)), "0"))
+        menu.addItem(.separator())
+        // Reveal presets go here when EditorView implements them.
         menu.addItem(item("Show Tab Bar", #selector(NSWindow.toggleTabBar(_:))))
         menu.addItem(item("Show All Tabs", #selector(NSWindow.toggleTabOverview(_:)), "\\", [.command, .shift]))
         menu.addItem(.separator())

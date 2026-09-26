@@ -95,3 +95,24 @@ struct ChromeTests {
         #expect(!other.isOutlineVisible)
     }
 }
+
+@Suite("Window chrome: zoom")
+@MainActor
+struct ZoomTests {
+    @Test func zoomStepsTenPercentWithinRange() {
+        let controller = EditorController(text: (0..<200).map { "Line \($0)\n" }.joined(), viewportWidth: 800)
+        let wc = DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let height = controller.lineHeight
+        wc.zoomIn(nil)
+        #expect(abs(controller.zoom - 1.1) < 0.001)
+        #expect(controller.lineHeight > height)
+        for _ in 0..<20 { wc.zoomIn(nil) }
+        #expect(abs(controller.zoom - 2.0) < 0.001)
+        for _ in 0..<30 { wc.zoomOut(nil) }
+        #expect(abs(controller.zoom - 0.6) < 0.001)
+        wc.resetZoom(nil)
+        #expect(abs(controller.zoom - 1) < 0.001)
+        let item = NSMenuItem(title: "Actual Size", action: #selector(DocumentWindowController.resetZoom(_:)), keyEquivalent: "0")
+        #expect(!wc.validateMenuItem(item))
+    }
+}

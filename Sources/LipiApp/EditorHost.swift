@@ -70,6 +70,7 @@ public final class LaunchTracker {
         self.options = options
         processStarted = processStartTime()
         interval = Signposts.launch.beginInterval("launch.firstFrame")
+        LaunchPrewarm.start(theme: options.theme)
     }
 
     /// Call from `applicationDidFinishLaunching`, and when the first

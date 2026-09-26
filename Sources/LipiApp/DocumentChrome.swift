@@ -94,10 +94,16 @@ public final class StatusBar: NSView {
 
     /// "1,234 words · 6,789 characters (5,601 without spaces) · 5 min read";
     /// with a selection, "12 of 1,234 words · …" over the selection.
-    public nonisolated static func format(document: TextCounts, selection: TextCounts?, wordsPerMinute: Int) -> String {
+    /// Made once: a `NumberFormatter` costs ~0.1 ms, and the first one in
+    /// the process several ms (ICU); formatting is thread-safe.
+    private nonisolated(unsafe) static let decimal: NumberFormatter = {
         let n = NumberFormatter()
         n.numberStyle = .decimal
-        func f(_ v: Int) -> String { n.string(from: NSNumber(value: v)) ?? String(v) }
+        return n
+    }()
+
+    public nonisolated static func format(document: TextCounts, selection: TextCounts?, wordsPerMinute: Int) -> String {
+        func f(_ v: Int) -> String { decimal.string(from: NSNumber(value: v)) ?? String(v) }
         func plural(_ v: Int, _ word: String) -> String { v == 1 ? word : word + "s" }
         let shown = selection ?? document
         var words = f(shown.words)

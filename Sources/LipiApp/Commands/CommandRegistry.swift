@@ -301,6 +301,9 @@ extension CommandRegistry {
         add("view.focusMode", "Focus Mode", #selector(EditorView.toggleFocusMode(_:)), "F8")
         add("view.typewriterMode", "Typewriter Mode", #selector(EditorView.toggleTypewriterMode(_:)), "F9")
         add("view.zenMode", "Zen Mode", #selector(DocumentWindowController.toggleZenMode(_:)), "Cmd-Ctrl-Shift-F")
+        // §6.12 settings until Settings → Editing has them.
+        add("view.focusSentence", "Focus on Sentence", #selector(DocumentWindowController.toggleFocusSentence(_:)), documentsOnly: true)
+        add("view.typewriterEase", "Ease Typewriter Scrolling", #selector(DocumentWindowController.toggleTypewriterEase(_:)), documentsOnly: true)
         // §6.13: opt-in inline syntaxes, app-wide.
         submenu = "Markdown Extensions"
         add("view.syntax.subscript", "Subscript ~x~", #selector(DocumentWindowController.toggleSubscriptSyntax(_:)), documentsOnly: true)

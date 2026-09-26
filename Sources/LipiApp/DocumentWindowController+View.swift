@@ -37,11 +37,21 @@ extension DocumentWindowController {
             chrome.isStatusBarHidden = restore.statusBarHidden
             if restore.outline { setOutlineVisible(true, focus: false) }
             if !restore.fullScreen, fullScreen { window.toggleFullScreen(sender) }
+            chrome.layoutSubtreeIfNeeded()
         } else {
-            zenRestore = ZenRestore(outline: isOutlineVisible, statusBarHidden: chrome.isStatusBarHidden, fullScreen: fullScreen)
-            if isOutlineVisible { setOutlineVisible(false, focus: false) }
-            chrome.isStatusBarHidden = true
-            if !fullScreen, window.isVisible { window.toggleFullScreen(sender) }
+            enterZenMode(wasFullScreen: fullScreen)
+        }
+    }
+
+    /// Hides the chrome and goes full screen. Restoration calls this with
+    /// the full-screen state from before zen, since AppKit may already have
+    /// put the window back in full screen, or may still do so.
+    func enterZenMode(wasFullScreen: Bool) {
+        zenRestore = ZenRestore(outline: isOutlineVisible, statusBarHidden: chrome.isStatusBarHidden, fullScreen: wasFullScreen)
+        if isOutlineVisible { setOutlineVisible(false, focus: false) }
+        chrome.isStatusBarHidden = true
+        if let window {
+            if !window.styleMask.contains(.fullScreen), window.isVisible { window.toggleFullScreen(nil) }
             window.makeFirstResponder(editor)
         }
         chrome.layoutSubtreeIfNeeded()
@@ -70,7 +80,8 @@ extension DocumentWindowController {
 
 extension DocumentWindowController: NSMenuItemValidation {
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        validateViewItem(menuItem) ?? validateSidebarItem(menuItem) ?? validateSyntaxItem(menuItem) ?? true
+        validateViewItem(menuItem) ?? validateSidebarItem(menuItem) ?? validateSyntaxItem(menuItem)
+            ?? validateWritingItem(menuItem) ?? true
     }
 }
 

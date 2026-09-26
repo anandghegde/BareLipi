@@ -35,7 +35,11 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     /// (the document's `AssetStore`). Without one, images are not accepted.
     public weak var imageHandler: EditorImageHandler?
     /// Focus mode (§6.12, F8): blocks other than the caret's are dimmed.
-    public var focusMode = false { didSet { needsDisplay = true } }
+    public var focusMode = false {
+        didSet { if focusMode != oldValue { focusModeDidChange() } }
+    }
+    /// Focus scope, typewriter position and the focus transition (`EditorView+Writing.swift`).
+    let writingState = WritingModeState()
     /// Typewriter mode (§6.12, F9): the caret line stays at mid-height.
     public var typewriterMode = false {
         didSet {
@@ -118,6 +122,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         postAccessibilityChange(textChanged: change.textChanged)
         if change.textChanged, footnoteState.shown != nil { closeFootnote() }
         updateEmojiCompletion(textChanged: change.textChanged)
+        if focusMode { focusScopeMayHaveChanged(textChanged: change.textChanged) }
         if change.viewportShift != 0, let clip = enclosingScrollView?.contentView {
             var origin = clip.bounds.origin
             origin.y += change.viewportShift
@@ -246,7 +251,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
                 ctx.fill(CGRect(x: rect.minX, y: rect.maxY - 2, width: max(rect.width, 2), height: 1.5))
             }
         }
-        if focusMode { dimOutsideFocus(in: ctx, dirty: dirty) }
+        if focusMode || writingState.transition != nil { dimOutsideFocus(in: ctx, dirty: dirty) }
         let focused = alwaysShowsCaret || window?.firstResponder === self
         if focused, caret.visible, selection.isEmpty || controller.hasMarkedText {
             var rect = controller.caretRect(forSource: controller.caret)

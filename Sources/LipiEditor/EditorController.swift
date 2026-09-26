@@ -425,9 +425,35 @@ public final class EditorController {
     /// Focus mode's scope (§6.12): the innermost selectable block around
     /// the caret (a paragraph, heading, list item, table or code block);
     /// nil between blocks.
-    public var focusScope: Range<Int>? {
+    public var focusScope: Range<Int>? { focusScope(.block) }
+
+    /// Focus mode's scope for a Settings choice: with `.sentence`, the
+    /// sentence around the caret (`NSString` sentence boundaries, trailing
+    /// spaces dropped) in a paragraph, heading or list item; other blocks
+    /// (code, tables) keep the block.
+    public func focusScope(_ kind: FocusScopeKind) -> Range<Int>? {
         let c = commands
-        return c.selectableBlocks(at: caret).first.map(c.blockRange)
+        guard let block = c.selectableBlocks(at: caret).first else { return nil }
+        let range = c.blockRange(block)
+        guard kind == .sentence else { return range }
+        switch block.kind {
+        case .paragraph, .heading, .listItem: break
+        default: return range
+        }
+        let text = string(in: range)
+        let utf8 = text.utf8
+        let at = caret - range.lowerBound
+        let bytes = Array(utf8)
+        var found: Range<Int>?
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: [.bySentences, .substringNotRequired]) { _, r, _, stop in
+            let lo = utf8.distance(from: utf8.startIndex, to: r.lowerBound)
+            var hi = utf8.distance(from: utf8.startIndex, to: r.upperBound)
+            while hi > lo, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[hi - 1]) { hi -= 1 }
+            if at >= lo { found = lo..<hi }
+            if at < utf8.distance(from: utf8.startIndex, to: r.upperBound) { stop = true }
+        }
+        guard let s = found, !s.isEmpty else { return range }
+        return (range.lowerBound + s.lowerBound)..<(range.lowerBound + s.upperBound)
     }
 
     var commands: MarkdownCommands {

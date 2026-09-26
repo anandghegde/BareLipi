@@ -44,6 +44,7 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         }
         counts.setNeedsUpdate(textChanged: true)
         observeOptionalSyntax()
+        observeWritingSettings()
     }
 
     private func editorDidChange(_ change: EditorChange) {
@@ -83,6 +84,8 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         state.showsOutline = zenRestore?.outline ?? isOutlineVisible
         state.focusMode = editor.focusMode
         state.typewriter = editor.typewriterMode
+        state.zenMode = isZenMode
+        state.zenWasFullScreen = zenRestore?.fullScreen
         return state
     }
 
@@ -92,6 +95,7 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
         if let shows = s.showsOutline, shows != isOutlineVisible { setOutlineVisible(shows, focus: false) }
         if let focus = s.focusMode { editor.focusMode = focus }
         if let typewriter = s.typewriter { editor.typewriterMode = typewriter }
+        if s.zenMode == true, !isZenMode { enterZenMode(wasFullScreen: s.zenWasFullScreen ?? false) }
         controller.moveCaret(to: s.anchor)
         if s.head != s.anchor { controller.moveCaret(to: s.head, extend: true) }
         let lineTop = controller.caretRect(forSource: s.scrollAnchor).minY

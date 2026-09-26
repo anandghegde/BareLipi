@@ -26,6 +26,11 @@ public struct RestorableEditorState: Codable, Sendable, Equatable {
     public var focusMode: Bool?
     /// Typewriter mode (§6.12, F9); nil in state from older builds.
     public var typewriter: Bool?
+    /// Zen mode (§6.12); nil in state from older builds. `showsOutline`
+    /// then holds the outline as it was before zen hid it.
+    public var zenMode: Bool?
+    /// Whether the window was already full screen when zen mode began.
+    public var zenWasFullScreen: Bool?
 
     public init(anchor: Int, head: Int, scrollAnchor: Int, scrollOffset: Double) {
         self.anchor = anchor

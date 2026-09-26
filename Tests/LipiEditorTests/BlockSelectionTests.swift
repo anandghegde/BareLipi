@@ -1,3 +1,4 @@
+import AppKit
 import LipiCore
 import LipiEditor
 import Testing
@@ -111,5 +112,43 @@ struct BlockSelectionTests {
         #expect(c.blockSelection == 3..<4)
         c.undo()
         #expect(c.string == "a\n\nb")
+    }
+
+    @Test func escWidensInACRLFDocument() {
+        let c = controller("- a\r\n- b^\r\n\r\nz")
+        c.selectEnclosingBlock()
+        #expect(withCarets(c) == "- a\r\n^- b^\r\n\r\nz")
+        c.selectEnclosingBlock()
+        #expect(withCarets(c) == "^- a\r\n- b^\r\n\r\nz")
+    }
+
+    @Test func escDuringCompositionIsLeftToTheInputMethod() {
+        let c = controller("ab^\n\ncd")
+        c.setMarkedText("k", selected: NSRange(location: 1, length: 0))
+        c.selectEnclosingBlock()
+        #expect(c.blockSelection == nil)
+        #expect(c.hasMarkedText)
+        #expect(c.string == "abk\n\ncd")
+    }
+
+    @Test func escInTheViewClosesAFootnoteBeforeSelecting() {
+        let view = makeView("Claim[^n] here.\n\n[^n]: Note.\n")
+        view.controller.moveCaret(to: 7)
+        view.showFootnote(nil)
+        #expect(view.shownFootnoteText == "Note.")
+        view.cancelOperation(nil)
+        #expect(view.shownFootnoteText == nil)
+        #expect(view.controller.blockSelection == nil)
+        view.cancelOperation(nil)
+        #expect(view.controller.blockSelection == 0..<15)
+    }
+
+    @Test func escInTheViewDuringCompositionDoesNotSelect() {
+        let view = makeView("ab\n\ncd")
+        view.controller.moveCaret(to: 2)
+        view.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.cancelOperation(nil)
+        #expect(view.controller.blockSelection == nil)
+        #expect(view.controller.hasMarkedText)
     }
 }

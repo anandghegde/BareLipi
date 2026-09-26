@@ -2,29 +2,33 @@
 
 ಬರೆ · ಲಿಪಿ — a native macOS Markdown editor. Swift 6, AppKit, Core Text; no web view on the editing path.
 
-The product requirements document lives in the Claude Doc "BareLipi PRD — Native macOS Markdown Editor". This repository is the Phase 0 implementation: foundations and spikes.
+The product requirements document lives in the Claude Doc "BareLipi PRD — Native macOS Markdown Editor". Phase 0 (foundations and spikes) is complete; Phase 1, the "Bare" MVP of PRD §10, is in progress.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `Sources/LipiCore` | Pure Swift document core: `LipiRope`, `SourceOffset`, `Edit`, `Delta`, `SourceBuffer` |
+| `Sources/LipiCore` | Pure Swift document core: `LipiRope`, `SourceOffset`, `Edit`, `Delta`, `SourceBuffer` (undo steps carry selections), `SourceProjection` (source mode, §6.2) |
 | `Sources/LipiCore/Rope` | Persistent UTF-8 B-tree rope with byte / UTF-16 / scalar / line summaries |
 | `Sources/LipiCore/Parser` | `LipiParser` (value AST with byte ranges), `BlockIndex` incremental re-parse, front matter, cmark bridge |
 | `Sources/LipiCore/Projection` | `Projection`: source → display blocks with `OffsetMap`s, `RevealPolicy` (PRD §6.1) |
 | `Sources/CCmarkGFM` | Vendored cmark-gfm 0.29.0.gfm.13 with source-position patches and a math extension (`PATCHES.md`) |
 | `Sources/LipiLayout` | ADR-002 block layout engine: `Typesetter` (Core Text, font cascade, themes), `BlockLayout` / `CellLayout` per block, `DocumentLayout` (lazy layout, `HeightTree`, `LayoutCache`), `CaretGeometry`, `Renderer`; `TextKit2Layout` is the headless TextKit 2 comparison used by the spike |
-| `Sources/LipiEditor` | `EditorController` (PRD §7.4 keystroke pipeline over either engine) and `EditorView`, one layer-backed `NSView` with `NSTextInputClient` and the accessibility text protocol |
+| `Sources/LipiEditor` | `EditorController` (PRD §7.4 keystroke pipeline over either engine, smart typing, auto-pair, typing undo coalescing, source mode), `MarkdownCommands` (§6.1.5 commands as `EditPlan`s over the block index) and `EditorView`, one layer-backed `NSView` with `NSTextInputClient`, the accessibility text protocol and the `@objc` actions behind the Format menu |
 | `Sources/LipiFixtures` | Generators for the §9.1 fixture set (`lorem-50k`, `kannada-20k`, `tables-600x6`, `10mb`, `reveal-matrix`, …) and pathological inputs, deterministic from a seed |
-| `Sources/BareLipi` | AppKit shell (SwiftPM executable): one window, one `EditorView`, plus the `--measure` driver |
+| `Sources/LipiApp` | Application layer shared by the bundle and the executable: `LipiDocument` (ADR-008), `AtomicWriter` (§9.3 save ladder), `TextCodec` (BOM, line endings, non-UTF-8), `FileFingerprint` and `ExternalChangeMonitor`, `CaretRemap`, tabs and state restoration, `NoticeBar`, `MainMenu`, `EditorHost`, `LaunchOptions` and the `--measure` driver |
+| `Sources/BareLipi` | SwiftPM executable: one window and one `EditorView` built through `LipiApp`; the harness host for `--measure` |
+| `App` | The app bundle's delegate and `Info.plist` (target `BareLipiApp` in `project.yml`, `NSDocument`-based, hardened runtime) |
 | `Sources/lipi-bench` | Release-mode micro-benchmarks for the core and the layout spike |
 | `Sources/lipi-fixtures` | Writes the fixture set to `Fixtures/perf` as `.md` files |
 | `Tests/LipiCoreTests` | swift-testing suites, including property tests against a `String` model and the parser range invariants |
 | `Tests/LipiCoreTests/Fixtures` | CommonMark 0.31.2 and GFM 0.29 spec files plus the GFM extension and regression suites |
 | `Tests/LipiLayoutTests` | Typesetter, block and document layout, tables, fonts, themes, and TextKit 2 comparison suites |
-| `Tests/LipiEditorTests` | Controller and view tests: clusters, IME, motion, selection, accessibility, pixel checks |
+| `Tests/LipiEditorTests` | Controller and view tests: clusters, IME, motion, selection, accessibility, pixel checks, formatting commands, smart typing, auto-pair, undo coalescing, source mode |
+| `Tests/LipiAppTests` | Atomic writes, text codec, external changes, restoration and document round trips |
 | `Tests/LipiPerfTests` | XCTest performance harness for the §9.1 rows with committed baselines |
 | `project.yml` | xcodegen spec for the application bundle (`xcodegen generate`) |
+| `.github/workflows/ci.yml` | CI: build and the whole test suite in debug on macos-latest with Xcode 26, plus an advisory release run of the gated perf harness that uploads `perf.log` |
 
 ## Build and test
 
@@ -41,6 +45,10 @@ swift test -c release --filter LipiPerfTests                        # §9.1 harn
 LIPI_PERF_GATE=1 swift test -c release --filter LipiPerfTests       # fail over budget or >10 % above baseline
 LIPI_PERF_RECORD=1 swift test -c release --filter LipiPerfTests     # rewrite Tests/LipiPerfTests/Baselines/m4.json
 xcodegen generate && open BareLipi.xcodeproj
+xcodegen generate && xcodebuild -project BareLipi.xcodeproj -scheme BareLipiApp -configuration Release \
+  -derivedDataPath DerivedData CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=NO build      # the app bundle
+open DerivedData/Build/Products/Release/BareLipi.app
+DerivedData/Build/Products/Release/BareLipi.app/Contents/MacOS/BareLipi --fixture kannada-20k --measure 6
 ```
 
 Requires Xcode 26 / Swift 6.3 and macOS 15 or later at runtime.
@@ -130,6 +138,47 @@ Requires Xcode 26 / Swift 6.3 and macOS 15 or later at runtime.
   Headless rows come from `swift test -c release --filter LipiPerfTests` (Apple M4, release; the budgets are the PRD's M1 figures, so an M4 should sit well inside them). App rows come from `BareLipi <fixture> --measure 6` on the second launch of the binary, with the display awake (a sleeping display stops the display link; the driver now finishes on a wall-clock deadline and says so). This machine's 4K display refreshes at 60 Hz, so the 120 fps rows are stated as per-frame budgets and the app's keystroke → drawn latency (2.7–15.8 ms p50 across runs) is the wait for the next 16.67 ms display cycle, set by where the 60 Hz keystroke timer lands, not by the editor: the work figure is the editor's. Memory deltas are process-level and noisy; the harness now prints the layout cache's size beside them, and what remains after the cache fix is Core Text's per-font shaping and glyph caches, which grow with unique text for the first tens of MB in a process (41–63 MB for Kannada, 36 MB for mixed scripts, 2.5 MB for Latin in an isolated run) before they saturate.
 
   Over budget, carried into Phase 1: the 10k × 10 table (the whole table is laid out at open; row-lazy table layout takes it to the same cost as any other block), launch (the SwiftPM executable's `NSApplication` bring-up and menu setup is 68–94 ms of it and window creation 30–47 ms; an app bundle with a precompiled main menu and a deferred window are the first things to try, with the editor's own share at 10–22 ms) and baseline memory (128 MB of the 157 MB footprint is layer backing on the 4K EDR display in 16-bit float, 8 bytes per pixel; 8-bit layer contents on the editor and scroll layers should halve it, and the malloc heap the editor actually owns is 13 MB).
+
+## Phase 1 status
+
+Phase 1 is the "Bare" MVP of PRD §10. Three packages have landed; the rest of the §10 list (bundled grammars, paste and drop with relative paths, Quick Open and Find, the Taalegari and Kari code themes, HTML export) and the exit checks (byte-preservation corpus, ten days of dogfooding, VoiceOver navigation by heading) are not started. The suite is 272 swift-testing tests in 33 suites (`LipiCoreTests` 58, `LipiLayoutTests` 83, `LipiEditorTests` 88, `LipiAppTests` 43) plus the 24-row XCTest harness.
+
+- [x] Table carry-overs from Phase 0. Row-lazy table layout: a row is measured when it scrolls into view or the caret or a hit test reaches it, and carries an estimated height before that, so caret and click positions stay right; column widths are sampled and only grow; the layout cache is weighted by lines actually laid out and the renderer draws the grid for visible rows only. Per-row table re-parse: an edit inside a body row re-parses that row alone (the header, the delimiter line and the edited line are parsed on their own, checked and spliced back in), every other row keeps its id, and the entry carries a revision and a row-edit record so the projection reuses the old table and redoes just that row plus any rows the caret reveals; caret-reveal scanning now stays within the entry, which removed a whole-table shift per keystroke. Randomised tests check the invariants against a fresh full parse; none needed the rebuild fallback. `lipi-bench` and the harness, release, M4:
+
+  | Measure | Phase 0 | Now |
+  | --- | --- | --- |
+  | Open 10k × 10 table (budget ≤ 500 ms) | 653 ms, +397 MB | 102 ms, +78 MB |
+  | Table 600 × 6: keystroke → screen drawn (bench) | 4.27 ms (parse 2.29 + project 1.35) | 0.57 ms (parse 0.03 + project 0.08) |
+  | Table 600 × 6: keystroke → caret rect (bench) | 6.10 ms | 0.22 ms |
+  | `key.tables-600x6` p50 / p99, memory added (harness) | 4.42 / 5.51 ms, +0.02 MB | 0.94 / 1.06 ms, +0.00 MB |
+
+- [x] CI and the perf gate. `.github/workflows/ci.yml` builds and runs the whole suite in debug on macos-latest with the newest Xcode 26, and a second job runs `LIPI_PERF_GATE=1` in release with `continue-on-error` (shared runners are not the baseline machine) and uploads `perf.log`; the workflow has not run on GitHub yet. `Baselines/m4.json` was re-recorded on a quiet machine with every row inside budget and 0 dropped frames. Memory rows are process-level deltas that move by tens of MB between runs of unchanged code (Core Text caches, page reclaim), so they now gate on their PRD budget only; timing rows gate at baseline + max(10 %, 1 ms), because the p99 of a 1 ms keystroke moves by a few hundred µs with machine load. With that, `LIPI_PERF_GATE=1` passes on this machine.
+
+- [x] Editing commands and source mode (P0-01, P0-02, P1-01, P1-02, auto-pair from P0-17). Every user action becomes a list of `Edit`s applied to `SourceBuffer` as one undo step, and bytes outside the edited range never change; `MarkdownCommands` builds each change from the parsed block index as an `EditPlan` (the edits in original coordinates plus the resulting selection), uses the document's own line ending (CRLF stays CRLF) and leaves markers on untargeted nodes alone. Inline toggles expand to the word when nothing is selected. Smart Enter continues list items, task items and quote prefixes, renumbers ordered lists, and ends an empty item. Auto-pair covers `* _ ~ \` $ ( [ {` and quotes, skips code contexts, word-internal cases and escapes; typing a closer steps over its pair and Backspace removes an empty pair only if auto-pair created it. Typing undo coalesces with a 1 s gap (injectable clock); a new step starts on a pause, a change of kind, a caret jump or a space after a word. Source mode (Cmd-/) shows the bytes exactly as stored through `SourceProjection`, monospace with syntax colouring, keeping caret, selection, undo stack and the top visible line; a toggle during IME composition waits for the commit. The §6.1.4 caret boundary rule holds in hybrid mode: Right from just before a closing delimiter goes past it and folds the span, Left from just after a span goes back inside it. `EditorSettings` switches auto-pair off and sets the emphasis marker and hard-break style. `EditorView.keyEquivalents` is the one table the key handler and the app's Format menu are built from:
+
+  | Key | Command | Key | Command |
+  | --- | --- | --- | --- |
+  | Cmd-/ | Source mode | Cmd-Opt-U / O / X | Bulleted / numbered / task list |
+  | Cmd-B / I / E | Bold / italic / code | Cmd-Shift-Return | Toggle task done |
+  | Cmd-Shift-X | Strikethrough | Cmd-] / Cmd-[ (Tab / Shift-Tab in lists) | Indent / outdent |
+  | Cmd-K / Cmd-Ctrl-I | Link / image | Cmd-Opt-Q / C / B | Quote / code block / math block |
+  | Cmd-1 … Cmd-6, Cmd-0 | Heading 1–6, paragraph | Cmd-Opt-- | Horizontal rule |
+  | Cmd-Ctrl-= / Cmd-Ctrl-- | Promote / demote heading | Cmd-Return, Shift-Return | Exit block, hard break |
+
+  Not yet: the Cmd-K link popover (it inserts `[label](|)` or wraps the selection; `insertLink(label:destination:title:)` is there for the UI), image insertion beyond a standard open panel (relative paths, paste and drop are P0-07), table completion, and Esc block selection.
+
+- [x] Document layer (P0-16, P0-19, ADR-008, §9.3). `LipiDocument` is an `NSDocument` with autosave in place on, draft autosave off and Versions on; Duplicate, Rename, Move, Revert and the dirty indicator are the standard machinery, and the editor keeps its own undo. Open reads through a file coordinator and records inode, mtime, size and a SHA-256, detects a BOM, CRLF / CR / LF / mixed endings and the final newline; text is kept exactly as read (CRLF, CR and NUL included), only the BOM is stripped and re-added, and save writes the exact bytes. Non-UTF-8 files open read-only with a "Convert to UTF-8" bar. `AtomicWriter` resolves symlinks (dangling ones too), writes an exclusive temp file beside the target, syncs it (full sync for Cmd-S) and swaps it in, puts back permissions, flags, creation date and xattrs without adding quarantine, writes hard links in place after a backup under `~/Library/Application Support/BareLipi/Backups/`, falls back to an in-place write on permission or cross-volume errors and refuses immutable files. External changes come from file coordination, a vnode watch and app activation, merged over 150 ms and checked against the fingerprint so the app's own saves are ignored: with no local edits the document reloads silently and keeps caret (by a line diff) and scroll; with local edits a bar offers Keep Mine and Take Theirs (Merge is shown disabled until P1-04); deleted files offer Save As… and Close and autosave will not recreate them; moved files are followed. Windows prefer tabs (Cmd-T new tab, Cmd-N new window, `NewDocumentOpensInTab` swaps them) and restore caret, selection and a scroll anchor. Both hosts build the same view stack through `EditorHost`, which asks for 8-bit layer contents (AppKit backs layers on an EDR display with 16-bit float otherwise) and share the same code-built main menu. Release bundle, `--fixture kannada-20k --measure 6`, second launch onwards, 4K display at 60 Hz:
+
+  | | Phase 0 (executable) | Now (bundle) |
+  | --- | --- | --- |
+  | Idle footprint, untitled document | 130 MB | 101 MB (IOSurface 26 MB, window-server graphics 49 MB, malloc 11 MB) |
+  | Idle footprint, kannada-20k | 132 MB | 106 MB |
+  | Pre-main | 12–30 ms | 12.5–13 ms |
+  | Process start → first frame (budget ≤ 50 ms) | 161–172 ms | **149–157 ms: still over budget.** main → first frame 136–144 ms = NSApplication and NSDocumentController 76–81 ms (menu 3–6 ms) + document 1 ms + controller 14–15 ms + window 21–23 ms + first draw |
+  | Keystroke → draw work, p50 / p99 (Kannada) | 1.6–1.9 / 4.0–4.8 ms | 1.6 / 3.2–3.9 ms |
+  | Bundle size | — | 2.4 MB |
+
+  Not yet: `EditorView` has no `isEditable`, so an edit to a read-only (non-UTF-8) document is taken back with a beep after the fact; three-way merge (P1-04); the launch budget, where most of the remaining time is AppKit's own document-controller start-up before the first document exists.
 
 ## Licence
 

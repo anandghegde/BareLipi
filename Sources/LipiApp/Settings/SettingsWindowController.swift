@@ -30,10 +30,17 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     static func makePanes() -> [NSTabViewItem] {
-        let keys = NSTabViewItem(viewController: KeysSettingsPane())
-        keys.label = "Keys"
-        keys.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keys")
-        return [keys]
+        [pane(EditorSettingsPane(), "Editing", "pencil"),
+         pane(CountsSettingsPane(), "Counts", "textformat.123"),
+         pane(ImagesSettingsPane(), "Images", "photo"),
+         pane(KeysSettingsPane(), "Keys", "keyboard")]
+    }
+
+    private static func pane(_ controller: NSViewController, _ label: String, _ symbol: String) -> NSTabViewItem {
+        let item = NSTabViewItem(viewController: controller)
+        item.label = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        return item
     }
 
     /// Selects the pane labelled `label` (e.g. "Keys").

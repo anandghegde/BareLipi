@@ -26,8 +26,8 @@ extension LipiDocument {
 
     /// The image treatment last chosen in the export panel.
     static var imageExportMode: ImageExport.Mode {
-        get { UserDefaults.standard.string(forKey: "export.html.images").flatMap(ImageExport.Mode.init(rawValue:)) ?? .reference }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "export.html.images") }
+        get { AppSettings().exportImages }
+        set { AppSettings().exportImages = newValue }
     }
 
     /// The panel's accessory: how to treat local images.

@@ -42,6 +42,7 @@ public final class DocumentWindowController: NSWindowController, NSWindowDelegat
             previous?(change)
             self?.editorDidChange(change)
         }
+        observeSettings()
         counts.setNeedsUpdate(textChanged: true)
     }
 

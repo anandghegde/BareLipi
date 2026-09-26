@@ -623,10 +623,11 @@ public final class EditorController {
     }
 
     /// Esc: selects the block around the selection as one unit; again, the
-    /// block around that. No-op outside blocks.
+    /// block around that. No-op outside blocks and during IME composition
+    /// (Esc belongs to the input method then).
     @discardableResult
     public func selectEnclosingBlock() -> EditorChange {
-        if marked != nil { _ = unmarkText() }
+        if marked != nil { return refresh(textChanged: false, started: DispatchTime.now()) }
         guard let r = commands.expandBlockSelection(from: blockSelection) else {
             closeTypingGroup()
             return refresh(textChanged: false, started: DispatchTime.now())

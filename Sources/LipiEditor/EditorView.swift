@@ -426,7 +426,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(NSResponder.insertTab(_:)): controller.insertTab()
         case #selector(NSResponder.insertBacktab(_:)): controller.insertBacktab()
         case #selector(NSResponder.selectAll(_:)): controller.selectAll()
-        case #selector(NSResponder.cancelOperation(_:)): controller.selectEnclosingBlock()
+        case #selector(NSResponder.cancelOperation(_:)): cancelOperation(nil)
         case #selector(NSResponder.pageDown(_:)), #selector(NSResponder.scrollPageDown(_:)): scrollPage(1)
         case #selector(NSResponder.pageUp(_:)), #selector(NSResponder.scrollPageUp(_:)): scrollPage(-1)
         default: super.doCommand(by: selector)
@@ -456,6 +456,16 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     @objc public func duplicateBlock(_ sender: Any?) { controller.duplicateBlock() }
     /// Esc (§6.1.4): select the enclosing block; again to widen.
     @objc public func selectEnclosingBlock(_ sender: Any?) { controller.selectEnclosingBlock() }
+    /// Esc in the editor. It keeps its other meanings first: the input
+    /// method's (composition), then closing the link or footnote popover;
+    /// otherwise it selects the enclosing block. (The emoji list takes Esc
+    /// in `keyDown`, the find bar's fields handle their own.)
+    @objc public override func cancelOperation(_ sender: Any?) {
+        if controller.hasMarkedText { return }
+        if let linkPopover { linkPopover.close(); return }
+        if footnoteState.shown != nil { closeFootnote(); return }
+        controller.selectEnclosingBlock()
+    }
     @objc public func toggleEmphasis(_ sender: Any?) { controller.toggleEmphasis() }
     @objc public func toggleStrikethrough(_ sender: Any?) { controller.toggleStrikethrough() }
     @objc public func toggleCodeSpan(_ sender: Any?) { controller.toggleCodeSpan() }
@@ -464,12 +474,13 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     /// window (tests, bench) it falls back to `[selection]()`.
     @objc public func insertLink(_ sender: Any?) {
         guard window != nil else { controller.insertLink(); return }
-        let draft = controller.linkDraft(pasteboard: NSPasteboard.general.string(forType: .string))
+        let pasteboard = NSPasteboard.general
+        let draft = controller.linkDraft(pasteboard: pasteboard.string(forType: .string) ?? pasteboard.string(forType: .URL))
         let rects = controller.rects(forSource: draft.range, visible: visibleRect)
         var anchor = rects.reduce(CGRect.null) { $0.union($1) }
         if anchor.isNull || draft.range.isEmpty { anchor = controller.caretRect(forSource: draft.range.lowerBound) }
         linkPopover?.close()
-        let popover = LinkPopover(draft: draft, commit: { [weak self] d in
+        let popover = LinkPopover(draft: draft, animates: displayOptions.duration(0.2) > 0, commit: { [weak self] d in
             self?.controller.commitLink(d)
         }, onClose: { [weak self] in
             guard let self else { return }

@@ -935,6 +935,10 @@ struct MarkdownCommands {
     /// `[label](destination "title")`, replacing the selection. With an
     /// empty destination the caret goes between the parentheses.
     func link(label: String?, destination: String, title: String?) -> EditPlan {
+        link(label: label, destination: destination, title: title, replacing: range)
+    }
+
+    func link(label: String?, destination: String, title: String?, replacing range: Range<Int>) -> EditPlan {
         let label = label ?? doc.string(range)
         var b = PlanBuilder()
         let dest = formatDestination(destination)

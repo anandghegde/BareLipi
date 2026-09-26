@@ -20,6 +20,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     private var hasDrawn = false
     private var pendingKeystroke: (start: DispatchTime, pipeline: Double, signpost: OSSignpostIntervalState)?
     private var mouseAnchor: Int?
+    private var linkPopover: LinkPopover?
     /// Draw the caret even when the view is not first responder (tests, bench).
     public var alwaysShowsCaret = false
 
@@ -325,9 +326,26 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     @objc public func toggleEmphasis(_ sender: Any?) { controller.toggleEmphasis() }
     @objc public func toggleStrikethrough(_ sender: Any?) { controller.toggleStrikethrough() }
     @objc public func toggleCodeSpan(_ sender: Any?) { controller.toggleCodeSpan() }
-    /// Cmd-K quick form: `[selection]()` with the caret in the parentheses.
-    /// A popover can call `EditorController.insertLink(label:destination:title:)`.
-    @objc public func insertLink(_ sender: Any?) { controller.insertLink() }
+    /// Cmd-K: the link popover at the selection, prefilled from the link
+    /// under the caret or the selection and a pasteboard URL. Without a
+    /// window (tests, bench) it falls back to `[selection]()`.
+    @objc public func insertLink(_ sender: Any?) {
+        guard window != nil else { controller.insertLink(); return }
+        let draft = controller.linkDraft(pasteboard: NSPasteboard.general.string(forType: .string))
+        let rects = controller.rects(forSource: draft.range, visible: visibleRect)
+        var anchor = rects.reduce(CGRect.null) { $0.union($1) }
+        if anchor.isNull || draft.range.isEmpty { anchor = controller.caretRect(forSource: draft.range.lowerBound) }
+        linkPopover?.close()
+        let popover = LinkPopover(draft: draft, commit: { [weak self] d in
+            self?.controller.commitLink(d)
+        }, onClose: { [weak self] in
+            guard let self else { return }
+            self.linkPopover = nil
+            self.window?.makeFirstResponder(self)
+        })
+        linkPopover = popover
+        popover.show(relativeTo: anchor.insetBy(dx: 0, dy: -2), of: self)
+    }
     /// Cmd-Ctrl-I: asks for an image file, then inserts `![selection](path)`.
     @objc public func insertImage(_ sender: Any?) {
         let panel = NSOpenPanel()

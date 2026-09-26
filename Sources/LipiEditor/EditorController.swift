@@ -402,6 +402,20 @@ public final class EditorController {
         run(commands.link(label: label, destination: destination, title: title))
     }
 
+    /// What the Cmd-K popover starts from: the link under the selection
+    /// (label, destination, title), or the selected text as the label and
+    /// `pasteboard` as the destination when it is a URL.
+    public func linkDraft(pasteboard: String? = nil) -> LinkDraft {
+        commands.linkDraft(pasteboard: pasteboard)
+    }
+
+    /// Writes the popover's link over `draft.range` (one undo step).
+    @discardableResult
+    public func commitLink(_ draft: LinkDraft) -> EditorChange {
+        if marked != nil { _ = unmarkText() }
+        return perform(commands.commitLink(draft))
+    }
+
     /// Cmd-Ctrl-I: `![alt](path)` over the selection.
     @discardableResult
     public func insertImage(alt: String? = nil, path: String) -> EditorChange {

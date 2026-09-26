@@ -10,7 +10,7 @@ import Testing
 struct ChromeTests {
     private func window(_ text: String) -> DocumentWindowController {
         let controller = EditorController(text: text, viewportWidth: 800)
-        return DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        return DocumentWindowController(controller: controller, theme: .taalegari, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
     }
 
     @Test func formatNamesDocumentAndSelection() {
@@ -101,7 +101,7 @@ struct ChromeTests {
 struct ZoomTests {
     @Test func zoomStepsTenPercentWithinRange() {
         let controller = EditorController(text: (0..<200).map { "Line \($0)\n" }.joined(), viewportWidth: 800)
-        let wc = DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let wc = DocumentWindowController(controller: controller, theme: .taalegari, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
         let height = controller.lineHeight
         wc.zoomIn(nil)
         #expect(abs(controller.zoom - 1.1) < 0.001)
@@ -122,7 +122,7 @@ struct ZoomTests {
 struct WritingModeWindowTests {
     private func window() -> DocumentWindowController {
         let controller = EditorController(text: "# A\n\nText.\n", viewportWidth: 800)
-        return DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        return DocumentWindowController(controller: controller, theme: .taalegari, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
     }
 
     @Test func zenHidesChromeAndRestoresIt() {

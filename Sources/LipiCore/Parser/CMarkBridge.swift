@@ -650,8 +650,8 @@ private struct Converter {
 
 extension Converter {
     /// Source bytes of `range` as an array.
-    func slice(_ range: Range<Int>) -> ArraySlice<UInt8> {
-        ArraySlice(bytes[range.clamped(to: 0..<count)])
+    func slice(_ range: Range<Int>) -> Slice<UnsafeBufferPointer<UInt8>> {
+        bytes[range.clamped(to: 0..<count)]
     }
 
     /// Runs of adjacent text inlines (cmark splits text at special
@@ -678,6 +678,14 @@ extension Converter {
 
     /// `:alias:` shortcodes inside text become `.emoji` inlines.
     mutating func splitEmoji(_ inlines: [Inline]) -> [Inline] {
+        // A shortcode needs two colons; most runs (table cells) have none.
+        guard let first = inlines.first, let last = inlines.last else { return inlines }
+        var colons = 0
+        for b in slice(first.range.lowerBound..<last.range.upperBound) where b == 0x3A {
+            colons += 1
+            if colons == 2 { break }
+        }
+        guard colons == 2 else { return inlines }
         var result = inlines
         for run in exactTextRuns(inlines).reversed() {
             guard run.literal.utf8.count >= 3 else { continue }

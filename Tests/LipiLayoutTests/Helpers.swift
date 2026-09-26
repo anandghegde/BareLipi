@@ -51,7 +51,7 @@ struct Doc {
     func block(_ entry: Int = 0, _ block: Int = 0) -> DisplayBlock { projection.entries[entry].blocks[block] }
 }
 
-func makeTypesetter(_ theme: Theme = .paper, zoom: CGFloat = 1, language: String? = nil) -> Typesetter {
+func makeTypesetter(_ theme: Theme = .taalegari, zoom: CGFloat = 1, language: String? = nil) -> Typesetter {
     Typesetter(scale: TypeScale(theme: theme, zoom: zoom), cascade: FontCascade(theme: theme, language: language))
 }
 

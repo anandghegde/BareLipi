@@ -1,6 +1,7 @@
 import AppKit
 import CoreText
 import LipiCore
+import LipiHighlight
 
 // MARK: - Decorations
 
@@ -60,10 +61,13 @@ extension NSAttributedString.Key {
 public struct Typesetter {
     public let scale: TypeScale
     public let cascade: FontCascade
+    /// Colours fenced code (P0-05). `nil` leaves code in the code ink.
+    public var highlighter: HighlightService?
 
-    public init(scale: TypeScale, cascade: FontCascade) {
+    public init(scale: TypeScale, cascade: FontCascade, highlighter: HighlightService? = .shared) {
         self.scale = scale
         self.cascade = cascade
+        self.highlighter = highlighter
     }
 
     public var colors: ThemeColors { scale.theme.colors }
@@ -104,11 +108,56 @@ public struct Typesetter {
     /// to skip cells that did not change.
     public func key(for cell: DisplayCell, in block: DisplayBlock, cellIndex: Int) -> UInt64 {
         key(text: cell.text, runs: cell.runs, role: role(of: block, cellIndex: cellIndex),
-            alignment: alignment(of: block, cellIndex: cellIndex))
+            alignment: alignment(of: block, cellIndex: cellIndex),
+            highlight: codeHighlight(cell, in: block)?.result.stamp ?? 0)
     }
 
-    func key(text: String, runs: [StyleRun], role: TextRole, alignment: ColumnAlignment) -> UInt64 {
+    // MARK: Code highlighting
+
+    struct CodeHighlight {
+        /// UTF-16 range of the code in the cell (its `.code` runs).
+        var range: Range<Int>
+        var result: HighlightService.Result
+    }
+
+    /// Spans for a fenced code block whose info string names a bundled
+    /// grammar; cached or provisional, never computed here (§9.1 budgets).
+    func codeHighlight(_ cell: DisplayCell, in block: DisplayBlock) -> CodeHighlight? {
+        guard let highlighter, case .code(let info, true) = block.role,
+              let grammar = GrammarBundle.grammar(forInfo: info) else { return nil }
+        guard let first = cell.runs.first(where: { $0.style.contains(.code) && !$0.range.isEmpty }),
+              let last = cell.runs.last(where: { $0.style.contains(.code) && !$0.range.isEmpty }) else { return nil }
+        let range = first.range.lowerBound..<last.range.upperBound
+        let utf16 = cell.text.utf16
+        let lower = utf16.index(utf16.startIndex, offsetBy: range.lowerBound)
+        let upper = utf16.index(lower, offsetBy: range.count)
+        let code = String(cell.text[lower..<upper])
+        return CodeHighlight(range: range, result: highlighter.lookup(code: code, grammar: grammar))
+    }
+
+    /// The highlight stamp of a block's code (0 when it is not highlighted):
+    /// part of the layout key, since Core Text lines carry their colours.
+    public func highlightStamp(of block: DisplayBlock) -> UInt64 {
+        guard case .code(_, true) = block.role, let cell = block.cells.first else { return 0 }
+        return codeHighlight(cell, in: block)?.result.stamp ?? 0
+    }
+
+    public func color(of token: SyntaxToken) -> ThemeColor {
+        switch token {
+        case .keyword: return colors.code.keyword
+        case .string: return colors.code.string
+        case .comment: return colors.code.comment
+        case .number: return colors.code.number
+        case .type: return colors.code.type
+        case .function: return colors.code.function
+        case .inserted: return colors.ok
+        case .deleted: return colors.error
+        }
+    }
+
+    func key(text: String, runs: [StyleRun], role: TextRole, alignment: ColumnAlignment, highlight: UInt64 = 0) -> UInt64 {
         var hasher = FNV()
+        if highlight != 0 { hasher.combine(Int(Int64(bitPattern: highlight))) }
         hasher.combine(text)
         hasher.combine(role.hashValue)
         hasher.combine(Int(scale.zoom * 100))
@@ -182,6 +231,16 @@ public struct Typesetter {
             }
         }
 
+        let highlight = codeHighlight(cell, in: block)
+        if let highlight {
+            for span in highlight.result.spans {
+                let lower = highlight.range.lowerBound + span.range.lowerBound
+                let upper = min(highlight.range.lowerBound + span.range.upperBound, highlight.range.upperBound)
+                guard lower < upper else { continue }
+                setColor(color(of: span.token), on: result, range: NSRange(location: lower, length: upper - lower))
+            }
+        }
+
         // Fonts: one per (style run × script run) segment.
         var boundaries = Set<Int>([0, length])
         for run in cell.runs { boundaries.insert(run.range.lowerBound); boundaries.insert(run.range.upperBound) }
@@ -204,7 +263,8 @@ public struct Typesetter {
 
         return TypesetCell(attributed: result, role: role, style: style, lineHeight: lineHeight,
                            lineHeightClass: tall ? .tall : .standard, decorations: decorations, alignment: alignment,
-                           isRightToLeft: isRTL, key: key(text: text, runs: cell.runs, role: role, alignment: alignment))
+                           isRightToLeft: isRTL, key: key(text: text, runs: cell.runs, role: role, alignment: alignment,
+                                                          highlight: highlight?.result.stamp ?? 0))
     }
 
     /// Font for an inline style inside a role, resolved through the cascade.

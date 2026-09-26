@@ -195,7 +195,7 @@ func megabytes(_ bytes: Int) -> String { String(format: "%.1f MB", Double(bytes)
 
 print("")
 print("layout (ADR-002 spike): LipiLayout vs headless TextKit 2, viewport 1000 × 800 @2x")
-let theme = Theme.paper
+let theme = Theme.taalegari
 let typesetter = Typesetter(scale: TypeScale(theme: theme), cascade: FontCascade(theme: theme))
 let renderer = Renderer(typesetter: typesetter)
 let viewport = CGRect(x: 0, y: 0, width: 1000, height: 800)

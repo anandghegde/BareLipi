@@ -139,6 +139,25 @@ public final class DocumentLayout {
         stale.removeAll()
     }
 
+    /// Drops the laid-out entries holding a fenced code block so they pick
+    /// up new highlight results (`HighlightService.didHighlight`). Heights
+    /// stay: colour never moves text. Returns whether any entry was dropped.
+    @discardableResult
+    public func invalidateCodeBlocks() -> Bool {
+        var any = false
+        for i in layouts.indices where layouts[i] != nil && i < projection.entries.count {
+            let hasCode = projection.entries[i].blocks.contains {
+                if case .code(_, true) = $0.role { return true }
+                return false
+            }
+            if hasCode {
+                layouts[i] = nil
+                any = true
+            }
+        }
+        return any
+    }
+
     // MARK: Projection updates
 
     /// Adopts a new projection. Entries the projection reused keep their
@@ -218,7 +237,14 @@ public final class DocumentLayout {
                 default: return false
                 }
             }()
-            let key = LayoutKey(layoutKey: block.layoutKey, width: isWide ? max(measure, wideWidth) : measure, themeRevision: themeRevision)
+            var blockKey = block.layoutKey
+            if case .code(_, true) = block.role {
+                // Highlight results arrive later than the text; they change
+                // colours, which Core Text bakes into the lines.
+                let stamp = typesetter.highlightStamp(of: block)
+                if stamp != 0 { blockKey = (blockKey ^ stamp) &* 0x100_0000_01B3 }
+            }
+            let key = LayoutKey(layoutKey: blockKey, width: isWide ? max(measure, wideWidth) : measure, themeRevision: themeRevision)
             let layout: BlockLayout
             if let cached = cache.layout(for: key) {
                 layout = cached

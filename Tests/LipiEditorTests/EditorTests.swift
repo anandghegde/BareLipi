@@ -214,7 +214,7 @@ struct EditorControllerTests {
     @Test func themeChangeRelaysOutEverything() {
         let c = EditorController(text: "Some text\n\nMore text")
         let before = c.caretRect(forSource: 12)
-        c.setTheme(.paper, zoom: 1.5)
+        c.setTheme(.taalegari, zoom: 1.5)
         let after = c.caretRect(forSource: 12)
         #expect(after.height > before.height)
     }

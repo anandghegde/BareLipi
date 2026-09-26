@@ -14,6 +14,8 @@ public enum PerfFixture: String, CaseIterable, Sendable {
     case math500 = "math-500"
     case mermaid20 = "mermaid-20"
     case revealMatrix = "reveal-matrix"
+    /// Prose around long fenced blocks in six languages (P0-05 highlighting).
+    case codeFences = "code-fences"
 
     public var fileName: String { rawValue + ".md" }
 
@@ -60,6 +62,9 @@ public enum PerfFixture: String, CaseIterable, Sendable {
             return g.mermaid(diagrams: 20)
         case .revealMatrix:
             return RevealMatrix.text
+        case .codeFences:
+            var g = CodeGenerator(seed: 0x5EED_0050)
+            return g.document(fences: 12, lines: 300)
         }
     }
 }
@@ -349,6 +354,57 @@ struct TableGenerator {
 }
 
 // MARK: - Math and diagrams
+
+/// Plausible source in several languages, for the highlighting rows.
+struct CodeGenerator {
+    var rng: SplitMix64
+    init(seed: UInt64) { rng = SplitMix64(seed: seed) }
+
+    static let names = ["value", "count", "buffer", "index", "result", "offset", "range", "node", "layout", "theme"]
+
+    mutating func document(fences: Int, lines: Int) -> String {
+        var out = "# Code\n\n"
+        let languages = ["swift", "python", "javascript", "rust", "go", "c"]
+        for f in 0..<fences {
+            out += "Paragraph \(f) before the listing, in plain prose.\n\n"
+            let language = languages[f % languages.count]
+            out += "```\(language)\n"
+            for i in 0..<lines { out += line(language, i) + "\n" }
+            out += "```\n\n"
+        }
+        return out
+    }
+
+    mutating func line(_ language: String, _ i: Int) -> String {
+        let a = rng.pick(Self.names), b = rng.pick(Self.names), n = rng.below(1000)
+        let comment = rng.chance(0.2)
+        switch language {
+        case "swift":
+            if i % 12 == 0 { return "func \(a)\(i)(_ \(b): Int) -> String {" }
+            if i % 12 == 11 { return "}" }
+            return "    let \(a)\(i) = \(b).map { $0 + \(n) }\(comment ? " // adjust \(b)" : "")"
+        case "python":
+            if i % 10 == 0 { return "def \(a)_\(i)(\(b)):" }
+            return "    \(a) = \(b) * \(n) + len(\"\(b)\")\(comment ? "  # \(b)" : "")"
+        case "javascript":
+            if i % 10 == 0 { return "function \(a)\(i)(\(b)) {" }
+            if i % 10 == 9 { return "}" }
+            return "  const \(a) = \(b).filter((x) => x > \(n));\(comment ? " // \(b)" : "")"
+        case "rust":
+            if i % 10 == 0 { return "fn \(a)_\(i)(\(b): &str) -> usize {" }
+            if i % 10 == 9 { return "}" }
+            return "    let \(a): u32 = \(b).len() as u32 + \(n);\(comment ? " // \(b)" : "")"
+        case "go":
+            if i % 10 == 0 { return "func \(a)\(i)(\(b) int) int {" }
+            if i % 10 == 9 { return "}" }
+            return "\t\(a) := \(b) + \(n)\(comment ? " // \(b)" : "")"
+        default:
+            if i % 10 == 0 { return "int \(a)_\(i)(int \(b)) {" }
+            if i % 10 == 9 { return "}" }
+            return "    int \(a) = \(b) + \(n);\(comment ? " /* \(b) */" : "")"
+        }
+    }
+}
 
 struct MathGenerator {
     var rng: SplitMix64

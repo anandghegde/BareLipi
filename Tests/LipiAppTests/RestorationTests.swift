@@ -34,7 +34,7 @@ struct RestorationTests {
     @Test func windowControllerAppliesAndReportsState() {
         let text = (0..<400).map { "Line \($0) of the document.\n" }.joined()
         let controller = EditorController(text: text, viewportWidth: 800)
-        let wc = DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let wc = DocumentWindowController(controller: controller, theme: .taalegari, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
         let target = RestorableEditorState(anchor: 2000, head: 2010, scrollAnchor: 0, scrollOffset: 1500)
         wc.apply(target)
         let state = wc.editorState()
@@ -52,7 +52,7 @@ struct RestorationTests {
     @Test func reloadRemapsCaretAndKeepsScroll() {
         let text = (0..<300).map { "Line \($0)\n" }.joined()
         let controller = EditorController(text: text, viewportWidth: 800)
-        let wc = DocumentWindowController(controller: controller, theme: .paper, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let wc = DocumentWindowController(controller: controller, theme: .taalegari, contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
         let caret = text.utf8.distance(from: text.startIndex, to: text.range(of: "Line 250\n")!.lowerBound) + 5  // before "250"
         controller.moveCaret(to: caret)
         wc.scroll(toY: 2000)

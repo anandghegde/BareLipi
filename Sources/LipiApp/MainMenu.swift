@@ -86,7 +86,13 @@ public enum MainMenu {
         let revertItem = item("Revert To", nil)
         revertItem.submenu = revert
         menu.addItem(revertItem)
-        // Export and Print arrive in Phase 2 (§6.13).
+        menu.addItem(.separator())
+        // HTML export is Phase 1 of P0-14; PDF and Print arrive in Phase 2 (§6.13).
+        let export = NSMenu(title: "Export")
+        export.addItem(item("HTML…", #selector(LipiDocument.exportHTML(_:)), "e", [.command, .shift]))
+        let exportItem = item("Export", nil)
+        exportItem.submenu = export
+        menu.addItem(exportItem)
         return menu
     }
 

@@ -13,8 +13,12 @@ The product requirements document lives in the Claude Doc "BareLipi PRD — Nati
 | `Sources/LipiCore/Parser` | `LipiParser` (value AST with byte ranges), `BlockIndex` incremental re-parse, front matter, cmark bridge |
 | `Sources/LipiCore/Projection` | `Projection`: source → display blocks with `OffsetMap`s, `RevealPolicy` (PRD §6.1) |
 | `Sources/CCmarkGFM` | Vendored cmark-gfm 0.29.0.gfm.13 with source-position patches and a math extension (`PATCHES.md`) |
+| `Sources/CTreeSitter` | Vendored tree-sitter 0.25.10 runtime (the `lib.c` amalgamation) |
+| `Sources/CTreeSitterGrammars` | The 36 Appendix A.4 grammars' generated parsers and scanners, their licences in `LICENSES/` and pinned revisions in `LICENSES/VENDORED.txt`; regenerate with `Scripts/vendor-tree-sitter.py` |
+| `Sources/LipiHighlight` | Fenced-code highlighting (P0-05): `GrammarBundle` (info string → grammar), `HighlightQuery` (highlights.scm → `SyntaxToken` spans), `HighlightService` (background parse, cache, provisional spans while typing) |
 | `Sources/LipiLayout` | ADR-002 block layout engine: `Typesetter` (Core Text, font cascade, themes), `BlockLayout` / `CellLayout` per block, `DocumentLayout` (lazy layout, `HeightTree`, `LayoutCache`), `CaretGeometry`, `Renderer`; `TextKit2Layout` is the headless TextKit 2 comparison used by the spike |
 | `Sources/LipiEditor` | `EditorController` (PRD §7.4 keystroke pipeline over either engine, smart typing, auto-pair, typing undo coalescing, source mode), `MarkdownCommands` (§6.1.5 commands as `EditPlan`s over the block index) and `EditorView`, one layer-backed `NSView` with `NSTextInputClient`, the accessibility text protocol and the `@objc` actions behind the Format menu |
+| `Sources/LipiExport` | HTML export (P0-14 Phase 1): `HTMLExporter` (cmark-gfm HTML with highlighted code, standalone page) and `ThemeCSSWriter` (theme palette and syntax colours as inline CSS) |
 | `Sources/LipiFixtures` | Generators for the §9.1 fixture set (`lorem-50k`, `kannada-20k`, `tables-600x6`, `10mb`, `reveal-matrix`, …) and pathological inputs, deterministic from a seed |
 | `Sources/LipiApp` | Application layer shared by the bundle and the executable: `LipiDocument` (ADR-008), `AtomicWriter` (§9.3 save ladder), `TextCodec` (BOM, line endings, non-UTF-8), `FileFingerprint` and `ExternalChangeMonitor`, `CaretRemap`, tabs and state restoration, `NoticeBar`, `MainMenu`, `EditorHost`, `LaunchOptions` and the `--measure` driver |
 | `Sources/BareLipi` | SwiftPM executable: one window and one `EditorView` built through `LipiApp`; the harness host for `--measure` |
@@ -23,10 +27,11 @@ The product requirements document lives in the Claude Doc "BareLipi PRD — Nati
 | `Sources/lipi-fixtures` | Writes the fixture set to `Fixtures/perf` as `.md` files |
 | `Tests/LipiCoreTests` | swift-testing suites, including property tests against a `String` model and the parser range invariants |
 | `Tests/LipiCoreTests/Fixtures` | CommonMark 0.31.2 and GFM 0.29 spec files plus the GFM extension and regression suites |
-| `Tests/LipiLayoutTests` | Typesetter, block and document layout, tables, fonts, themes, and TextKit 2 comparison suites |
+| `Tests/LipiLayoutTests` | Typesetter, block and document layout, tables, fonts, themes, code highlighting, and TextKit 2 comparison suites |
 | `Tests/LipiEditorTests` | Controller and view tests: clusters, IME, motion, selection, accessibility, pixel checks, formatting commands, smart typing, auto-pair, undo coalescing, source mode |
-| `Tests/LipiAppTests` | Atomic writes, text codec, external changes, restoration and document round trips |
+| `Tests/LipiAppTests` | Atomic writes, text codec, external changes, restoration, document round trips and HTML export |
 | `Tests/LipiPerfTests` | XCTest performance harness for the §9.1 rows with committed baselines |
+| `Scripts/vendor-tree-sitter.py` | Fetches the pinned tree-sitter runtime and grammars and regenerates `Sources/CTreeSitter*` and `Sources/LipiHighlight/GrammarQueries.swift` |
 | `project.yml` | xcodegen spec for the application bundle (`xcodegen generate`) |
 | `.github/workflows/ci.yml` | CI: build and the whole test suite in debug on macos-latest with Xcode 26, plus an advisory release run of the gated perf harness that uploads `perf.log` |
 
@@ -39,11 +44,12 @@ swift run -c release lipi-bench              # core and layout-spike micro-bench
 swift run -c release lipi-fixtures           # writes Fixtures/perf/*.md (ignored by git)
 swift run -c release BareLipi                # the editor with a welcome document
 swift run -c release BareLipi path/to/doc.md
-swift run -c release BareLipi --fixture lorem-50k --engine textkit2 --theme ink --zoom 1.2
+swift run -c release BareLipi --fixture lorem-50k --engine textkit2 --theme kari --zoom 1.2
 swift run -c release BareLipi --fixture kannada-20k --measure 10   # types, scrolls, prints frame stats, quits
 swift test -c release --filter LipiPerfTests                        # §9.1 harness, comparable numbers
 LIPI_PERF_GATE=1 swift test -c release --filter LipiPerfTests       # fail over budget or >10 % above baseline
 LIPI_PERF_RECORD=1 swift test -c release --filter LipiPerfTests     # rewrite Tests/LipiPerfTests/Baselines/m4.json
+python3 Scripts/vendor-tree-sitter.py                               # re-vendor tree-sitter and the A.4 grammars (network)
 xcodegen generate && open BareLipi.xcodeproj
 xcodegen generate && xcodebuild -project BareLipi.xcodeproj -scheme BareLipiApp -configuration Release \
   -derivedDataPath DerivedData CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=NO build      # the app bundle
@@ -185,3 +191,5 @@ Phase 1 is the "Bare" MVP of PRD §10. Three packages have landed; the rest of t
 BareLipi is released under the [MIT License](LICENSE).
 
 `Sources/CCmarkGFM` vendors [cmark-gfm](https://github.com/github/cmark-gfm), which keeps its own licence (BSD-2-Clause for cmark, MIT for the bundled houdini and utf8proc-derived code) in `Sources/CCmarkGFM/COPYING`; BareLipi's patches to it are MIT. The spec files under `Tests/LipiCoreTests/Fixtures` are the CommonMark and GFM specifications, licensed CC-BY-SA 4.0 by their authors.
+
+`Sources/CTreeSitter` vendors the [tree-sitter](https://github.com/tree-sitter/tree-sitter) runtime (MIT, `Sources/CTreeSitter/LICENSE`). `Sources/CTreeSitterGrammars` vendors the generated parsers, scanners and highlight queries of 36 tree-sitter grammars, each under its own licence in `Sources/CTreeSitterGrammars/LICENSES` (MIT for most, Apache-2.0 for Elixir, the Unlicense for fish), with source URLs and revisions in `LICENSES/VENDORED.txt`.

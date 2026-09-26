@@ -1,0 +1,4 @@
+# Vendored, generated tree-sitter sources: keep them out of diffs and language stats.
+Sources/CTreeSitter/** linguist-vendored -diff
+Sources/CTreeSitterGrammars/** linguist-vendored -diff
+Sources/LipiHighlight/GrammarQueries.swift linguist-generated -diff

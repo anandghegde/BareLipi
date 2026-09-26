@@ -6,14 +6,14 @@ import LipiLayout
 
 /// Command line shared by the SwiftPM executable and the app bundle:
 /// `BareLipi [--fixture <name> | <path>] [--engine lipi|textkit2]
-/// [--theme paper|snow|ink|slate] [--zoom <factor>] [--measure <seconds>]`.
+/// [--theme taalegari|kari|bili|neeli] [--zoom <factor>] [--measure <seconds>]`.
 /// Arguments the system passes to a bundle (`-psn_…`, `-NSDocumentRevisionsDebugMode YES`
 /// and other `-Key value` defaults) are skipped when `lenient` is set.
 public struct LaunchOptions {
     public var fixture: PerfFixture? = nil
     public var path: String? = nil
     public var engine: LayoutEngineKind = .lipi
-    public var theme: Theme = .paper
+    public var theme: Theme = .taalegari
     public var zoom: CGFloat = 1
     public var measureSeconds: Double? = nil
 
@@ -35,7 +35,7 @@ public struct LaunchOptions {
                 guard let name = value(), let engine = LayoutEngineKind(rawValue: name) else { fail("--engine lipi|textkit2") }
                 options.engine = engine; i += 1
             case "--theme":
-                guard let name = value(), let theme = Theme.all.first(where: { $0.name.lowercased() == name.lowercased() }) else {
+                guard let name = value(), let theme = Theme.named(name) else {
                     fail("--theme needs one of: \(Theme.all.map { $0.name.lowercased() }.joined(separator: ", "))")
                 }
                 options.theme = theme; i += 1
@@ -46,7 +46,7 @@ public struct LaunchOptions {
                 guard let v = value(), let seconds = Double(v) else { fail("--measure <seconds>") }
                 options.measureSeconds = seconds; i += 1
             case "--help", "-h":
-                print("usage: BareLipi [--fixture <name> | <path>] [--engine lipi|textkit2] [--theme paper|snow|ink|slate] [--zoom <factor>] [--measure <seconds>]")
+                print("usage: BareLipi [--fixture <name> | <path>] [--engine lipi|textkit2] [--theme taalegari|kari|bili|neeli] [--zoom <factor>] [--measure <seconds>]")
                 exit(0)
             default:
                 if lenient, arg.hasPrefix("-psn_") { break }

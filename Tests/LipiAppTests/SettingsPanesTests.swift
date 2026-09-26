@@ -23,7 +23,11 @@ private func controls<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
     return out
 }
 
+// Main actor, as in the app: setters post `AppSettings.didChange`
+// synchronously, and open windows (other suites create some) observe it on
+// the main actor.
 @Suite("Settings: typed defaults")
+@MainActor
 struct AppSettingsTests {
     @Test func defaultsMatchThePRD() {
         let s = AppSettings(defaults: scratchDefaults())

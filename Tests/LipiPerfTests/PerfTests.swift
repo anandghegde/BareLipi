@@ -3,6 +3,7 @@ import Foundation
 import LipiCore
 import LipiEditor
 import LipiFixtures
+import LipiHighlight
 import LipiLayout
 import XCTest
 
@@ -97,6 +98,27 @@ final class PerfTests: XCTestCase {
     func testKeystrokeToDrawLorem50k() { _ = measureTyping(.lorem50k, key: "key.lorem-50k") }
     func testKeystrokeToDrawKannada20k() { _ = measureTyping(.kannada20k, key: "key.kannada-20k") }
     func testKeystrokeToDrawMixedScripts() { _ = measureTyping(.mixedScripts, key: "key.mixed-scripts") }
+    /// Typing inside a 300-line fence (P0-05): highlighting runs off the
+    /// main thread, so the keystroke keeps the §9.1 budget.
+    func testKeystrokeToDrawInCodeFence() { _ = measureTyping(.codeFences, key: "key.code-fences") }
+
+    /// Background highlight of one 300-line fence (parse + query), per
+    /// language; no PRD budget, it is off the keystroke path.
+    func testHighlightThroughput() {
+        let text = PerfFixture.codeFences.text()
+        var times: [Double] = []
+        for part in text.components(separatedBy: "```").enumerated() where part.offset % 2 == 1 {
+            let newline = part.element.firstIndex(of: "\n")!
+            let info = String(part.element[..<newline])
+            let code = String(part.element[part.element.index(after: newline)...])
+            let grammar = GrammarBundle.grammar(forInfo: info)!
+            _ = grammar.query  // compiled once per grammar, not per block
+            times.append(seconds { _ = HighlightService(capacity: 1).highlight(code: code, grammar: grammar) } * 1000)
+        }
+        let sorted = times.sorted()
+        Perf.report("highlight.fence-300-lines.p50", percentile(sorted, 0.5), unit: "ms", budget: nil,
+                    note: String(format: "max %.2f ms over %d fences", sorted.last ?? 0, sorted.count))
+    }
 
     /// Typing at 120 fps: the per-keystroke work must fit an 8.33 ms frame.
     func testTypingFrameBudget() {

@@ -2,6 +2,7 @@ import AppKit
 import CoreText
 import Foundation
 import LipiCore
+import LipiHighlight
 import LipiLayout
 
 /// Which layout engine the controller runs (the ADR-002 spike switch).
@@ -39,6 +40,10 @@ public final class EditorController {
     public private(set) var stats = Stats()
     /// Called after every pipeline run.
     public var onChange: ((EditorChange) -> Void)?
+    /// Called when something outside the pipeline changed how the document
+    /// looks without moving it (code highlights landing): redraw only.
+    public var onRedisplay: (() -> Void)?
+    nonisolated(unsafe) private var highlightObserver: NSObjectProtocol?
     /// Hybrid (§6.1) or source (§6.2) presentation. Edits are identical in both.
     public private(set) var mode: EditorMode = .hybrid
     /// Settings the commands read (emphasis marker, hard break, auto-pair).
@@ -72,6 +77,22 @@ public final class EditorController {
         selection = SelectionModel(caret: 0)
         if engine == .textkit2 { textKit = TextKit2Layout(width: layout.measure) }
         _ = refresh(textChanged: true, started: DispatchTime.now())
+        highlightObserver = NotificationCenter.default.addObserver(
+            forName: HighlightService.didHighlight, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.highlightsDidChange() }
+        }
+    }
+
+    deinit {
+        if let highlightObserver { NotificationCenter.default.removeObserver(highlightObserver) }
+    }
+
+    /// Background highlighting finished (P0-05): re-typeset the code blocks
+    /// that are laid out. Colours only, so no heights or scrolling change.
+    func highlightsDidChange() {
+        guard engine == .lipi, layout.invalidateCodeBlocks() else { return }
+        onRedisplay?()
     }
 
     // MARK: Document

@@ -31,6 +31,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         autoresizingMask = [.width]
         controller.setViewportWidth(frame.width)
         controller.onChange = { [weak self] change in self?.didChange(change) }
+        controller.onRedisplay = { [weak self] in self?.needsDisplay = true }
         caret.onToggle = { [weak self] in self?.invalidateCaret() }
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)

@@ -64,14 +64,14 @@ let package = Package(
         // headless TextKit 2 comparison used by the layout spike.
         .target(
             name: "LipiLayout",
-            dependencies: ["LipiCore"],
+            dependencies: ["LipiCore", "LipiHighlight"],
             swiftSettings: strict
         ),
         // AppKit editor: EditorView (NSTextInputClient, accessibility),
         // EditorController (the §7.4 keystroke pipeline), caret and selection.
         .target(
             name: "LipiEditor",
-            dependencies: ["LipiCore", "LipiLayout"],
+            dependencies: ["LipiCore", "LipiHighlight", "LipiLayout"],
             swiftSettings: strict
         ),
         // Deterministic generators for the §9.1 fixture set.
@@ -98,12 +98,12 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "LipiLayoutTests", dependencies: ["LipiLayout", "LipiHighlight", "LipiFixtures"]),
-        .testTarget(name: "LipiEditorTests", dependencies: ["LipiEditor", "LipiFixtures"]),
+        .testTarget(name: "LipiEditorTests", dependencies: ["LipiEditor", "LipiHighlight", "LipiLayout", "LipiFixtures"]),
         .testTarget(name: "LipiAppTests", dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiLayout"]),
         // XCTest performance harness: one test per row of PRD §9.1.
         .testTarget(
             name: "LipiPerfTests",
-            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"],
+            dependencies: ["LipiCore", "LipiHighlight", "LipiLayout", "LipiEditor", "LipiFixtures"],
             resources: [.copy("Baselines")]
         ),
     ],

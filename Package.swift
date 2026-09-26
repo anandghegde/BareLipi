@@ -82,11 +82,12 @@ let package = Package(
             dependencies: ["LipiCore", "LipiHighlight", "LipiLayout"],
             swiftSettings: strict
         ),
-        // Export (P0-14): standalone HTML from cmark-gfm, the highlighter
-        // and the theme's CSS.
+        // Export (P0-14): standalone HTML from cmark-gfm (whose tree it
+        // edits for heading ids, `[toc]` and emoji), the highlighter and the
+        // theme's CSS.
         .target(
             name: "LipiExport",
-            dependencies: ["LipiCore", "LipiHighlight", "LipiLayout"],
+            dependencies: ["CCmarkGFM", "LipiCore", "LipiHighlight", "LipiLayout"],
             swiftSettings: strict
         ),
         // Deterministic generators for the §9.1 fixture set.

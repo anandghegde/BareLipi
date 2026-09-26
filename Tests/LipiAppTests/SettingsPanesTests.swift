@@ -37,6 +37,7 @@ struct AppSettingsTests {
         #expect(s.editorSettings == EditorSettings())
         #expect(s.countOptions == CountOptions())
         #expect(s.exportImages == .reference)
+        #expect(s.exportTheme == .window)
     }
 
     @Test func valuesRoundTripAndCompose() {
@@ -52,10 +53,12 @@ struct AppSettingsTests {
         s.imageNaming = .original
         s.convertHEIC = false
         s.exportImages = .embed
+        s.exportTheme = .lightAndDark
         #expect(s.editorSettings == EditorSettings(emphasisMarker: "_", hardBreak: .twoSpaces, autoPair: false))
         #expect(s.codeOptions == CodeBlockOptions(lineNumbers: true, wrap: false))
         #expect(s.countOptions == CountOptions(includeCode: true, includeMath: false, cjkByCharacter: true, wordsPerMinute: 200))
         #expect(s.imageNaming == .original && !s.convertHEIC && s.exportImages == .embed)
+        #expect(s.exportTheme == .lightAndDark)
     }
 
     @Test func readingSpeedIsClamped() {
@@ -131,6 +134,17 @@ struct SettingsPanesTests {
         #expect(export.titleOfSelectedItem == ImageExport.Mode.copy.title)
         heic.performClick(nil)
         #expect(s.convertHEIC)
+    }
+
+    @Test func imagesPaneOffersTheExportTheme() throws {
+        let s = AppSettings(defaults: scratchDefaults())
+        s.exportTheme = .lightAndDark
+        let pane = ImagesSettingsPane(settings: s)
+        let popup = try #require(controls(NSPopUpButton.self, in: pane.view).first { $0.itemTitles.contains(ExportThemeMode.window.title) })
+        #expect(popup.titleOfSelectedItem == ExportThemeMode.lightAndDark.title)
+        popup.selectItem(withTitle: ExportThemeMode.window.title)
+        _ = popup.target?.perform(popup.action, with: popup)
+        #expect(s.exportTheme == .window)
     }
 
     @Test func windowAppliesSettingsToEditorAndCounts() {

@@ -5,7 +5,8 @@ import LipiLayout
 import UniformTypeIdentifiers
 
 /// File > Export > HTML… (P0-14, Phase 1): a standalone page in the
-/// window's theme, written off the main thread through `AtomicWriter`.
+/// window's theme (or a light / dark pair), written off the main thread
+/// through `AtomicWriter`.
 extension LipiDocument {
     /// The export's title: the document name without its extension.
     var exportTitle: String {
@@ -13,15 +14,28 @@ extension LipiDocument {
         return displayName ?? "Untitled"
     }
 
-    /// The text and theme to export, captured on the main thread.
-    func exportSnapshot() -> (markdown: String, theme: Theme, title: String) {
+    /// The text, theme and opt-in syntaxes to export, captured on the main
+    /// thread.
+    func exportSnapshot() -> (markdown: String, theme: Theme, syntax: ParserOptions.Extensions, title: String) {
         let markdown: String
+        let syntax: ParserOptions.Extensions
         if let controller = windowController?.controller {
             markdown = controller.rope.string
+            syntax = controller.parserOptions.extensions.intersection(HTMLExporter.optionalSyntax)
         } else {
             markdown = String(decoding: currentBytes(), as: UTF8.self)
+            syntax = Self.optionalSyntaxSetting
         }
-        return (markdown, windowController?.controller.theme ?? .taalegari, exportTitle)
+        return (markdown, windowController?.controller.theme ?? .taalegari, syntax, exportTitle)
+    }
+
+    /// View › Markdown Extensions, for a document without a window.
+    static var optionalSyntaxSetting: ParserOptions.Extensions {
+        var out: ParserOptions.Extensions = []
+        if OptionalSyntax.subscript.isEnabled() { out.insert(.subscript) }
+        if OptionalSyntax.superscript.isEnabled() { out.insert(.superscript) }
+        if OptionalSyntax.highlight.isEnabled() { out.insert(.highlight) }
+        return out
     }
 
     /// The image treatment last chosen in the export panel.
@@ -30,20 +44,34 @@ extension LipiDocument {
         set { AppSettings().exportImages = newValue }
     }
 
-    /// The panel's accessory: how to treat local images.
-    static func imageModeAccessory() -> (view: NSView, popup: NSPopUpButton) {
-        let label = NSTextField(labelWithString: "Images:")
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        for mode in ImageExport.Mode.allCases {
-            popup.addItem(withTitle: mode.title)
-            popup.lastItem?.representedObject = mode.rawValue
+    /// The theme mode last chosen in the export panel.
+    static var themeExportMode: ExportThemeMode {
+        get { AppSettings().exportTheme }
+        set { AppSettings().exportTheme = newValue }
+    }
+
+    /// The panel's accessory: how to treat local images, and the theme.
+    static func exportAccessory() -> (view: NSView, images: NSPopUpButton, theme: NSPopUpButton) {
+        func popup(_ titles: [(String, String)], selected: Int, label: String) -> NSPopUpButton {
+            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+            for (title, value) in titles {
+                popup.addItem(withTitle: title)
+                popup.lastItem?.representedObject = value
+            }
+            popup.selectItem(at: selected)
+            popup.setAccessibilityLabel(label)
+            return popup
         }
-        popup.selectItem(at: ImageExport.Mode.allCases.firstIndex(of: imageExportMode) ?? 0)
-        popup.setAccessibilityLabel("Images")
-        let stack = NSStackView(views: [label, popup])
+        let images = popup(ImageExport.Mode.allCases.map { ($0.title, $0.rawValue) },
+                           selected: ImageExport.Mode.allCases.firstIndex(of: imageExportMode) ?? 0, label: "Images")
+        let theme = popup(ExportThemeMode.allCases.map { ($0.title, $0.rawValue) },
+                          selected: ExportThemeMode.allCases.firstIndex(of: themeExportMode) ?? 0, label: "Theme")
+        let stack = NSStackView(views: [NSTextField(labelWithString: "Images:"), images,
+                                        NSTextField(labelWithString: "Theme:"), theme])
         stack.orientation = .horizontal
+        stack.setCustomSpacing(16, after: images)
         stack.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
-        return (stack, popup)
+        return (stack, images, theme)
     }
 
     @objc public func exportHTML(_ sender: Any?) {
@@ -53,13 +81,15 @@ extension LipiDocument {
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = exportTitle + ".html"
         if let directory = fileURL?.deletingLastPathComponent() { panel.directoryURL = directory }
-        let accessory = Self.imageModeAccessory()
+        let accessory = Self.exportAccessory()
         panel.accessoryView = accessory.view
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            let mode = (accessory.popup.selectedItem?.representedObject as? String).flatMap(ImageExport.Mode.init(rawValue:)) ?? .reference
+            let mode = (accessory.images.selectedItem?.representedObject as? String).flatMap(ImageExport.Mode.init(rawValue:)) ?? .reference
+            let theme = (accessory.theme.selectedItem?.representedObject as? String).flatMap(ExportThemeMode.init(rawValue:)) ?? .window
             Self.imageExportMode = mode
-            Task { await self.exportAndReport(to: url, images: mode) }
+            Self.themeExportMode = theme
+            Task { await self.exportAndReport(to: url, images: mode, theme: theme) }
         }
         if let window = windowController?.window {
             panel.beginSheetModal(for: window, completionHandler: completion)
@@ -68,9 +98,9 @@ extension LipiDocument {
         }
     }
 
-    private func exportAndReport(to url: URL, images: ImageExport.Mode) async {
+    private func exportAndReport(to url: URL, images: ImageExport.Mode, theme: ExportThemeMode) async {
         do {
-            let missing = try await exportHTML(to: url, images: images)
+            let missing = try await exportHTML(to: url, images: images, theme: theme)
             guard !missing.isEmpty else { return }
             // Missing images are reported, not fatal (§6.14).
             let alert = NSAlert()
@@ -87,11 +117,13 @@ extension LipiDocument {
     /// beside it when `images` is `.copy`; the render and the writes run on
     /// a background task. Returns the image sources that were not found.
     @discardableResult
-    public func exportHTML(to url: URL, images: ImageExport.Mode = .reference) async throws -> [String] {
+    public func exportHTML(to url: URL, images: ImageExport.Mode = .reference,
+                           theme: ExportThemeMode = .window) async throws -> [String] {
         let snapshot = exportSnapshot()
         let options = ImageExport(mode: images, documentDirectory: fileURL?.deletingLastPathComponent(), outputURL: url)
         return try await Task.detached(priority: .userInitiated) {
-            let result = HTMLExporter(theme: snapshot.theme).export(markdown: snapshot.markdown, title: snapshot.title, images: options)
+            let exporter = HTMLExporter(theme: snapshot.theme, themeMode: theme, syntax: snapshot.syntax)
+            let result = exporter.export(markdown: snapshot.markdown, title: snapshot.title, images: options)
             if !result.copies.isEmpty {
                 let files = FileManager.default
                 try files.createDirectory(at: options.assetsFolder, withIntermediateDirectories: true)

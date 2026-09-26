@@ -52,8 +52,10 @@ enum CMarkBridge {
     }
 
     /// HTML for `markdown`, exactly as `cmark-gfm --unsafe` renders it. Used by
-    /// the spec suites and by export.
-    static func renderHTML(_ markdown: String, extensions: [String], cmarkOptions: Int32) -> String {
+    /// the spec suites and by export, which may edit the tree first
+    /// (`rewrite` gets the document node).
+    static func renderHTML(_ markdown: String, extensions: [String], cmarkOptions: Int32,
+                           rewrite: (OpaquePointer) -> Void = { _ in }) -> String {
         _ = ready
         guard let parser = cmark_parser_new(cmarkOptions) else { return "" }
         defer { cmark_parser_free(parser) }
@@ -62,6 +64,7 @@ enum CMarkBridge {
         text.withUTF8 { feed($0, to: parser) }
         guard let root = cmark_parser_finish(parser) else { return "" }
         defer { cmark_node_free(root) }
+        rewrite(root)
         guard let html = cmark_render_html(root, cmarkOptions, cmark_parser_get_syntax_extensions(parser)) else { return "" }
         defer { cmark_get_default_mem_allocator().pointee.free(html) }
         return String(cString: html)

@@ -11,7 +11,7 @@ struct ThemeTests {
         #expect(approximately(black.relativeLuminance, 0, within: 0.001))
         #expect(approximately(white.contrastRatio(against: black), 21, within: 0.01))
         #expect(approximately(black.contrastRatio(against: white), 21, within: 0.01))
-        #expect(ThemeColor(hex: 0x8A3B12).hexString == "#8A3B12")
+        #expect(ThemeColor(hex: 0xA63D2B).hexString == "#A63D2B")
         // Compositing a half-transparent white over black gives mid grey.
         let mixed = ThemeColor(hex: 0xFFFFFF, alpha: 0.5).over(black)
         #expect(approximately(mixed.red, 0.5, within: 0.01))
@@ -33,12 +33,13 @@ struct ThemeTests {
         let bg = theme.colors.bg.relativeLuminance
         let ink = theme.colors.ink.relativeLuminance
         #expect(theme.isDark ? bg < ink : bg > ink)
-        // Selection is translucent so the text stays readable through it.
-        #expect(theme.colors.selection.alpha < 1)
+        // Auto pairs a light theme with a dark one and back (§8.4).
+        #expect(theme.pair.isDark != theme.isDark)
+        #expect(theme.pair.pair == theme)
     }
 
     @Test func typeTableAtDefaultZoom() {
-        let scale = TypeScale(theme: .paper)
+        let scale = TypeScale(theme: .taalegari)
         #expect(scale.factor == 1)
         let body = scale.style(for: .body)
         #expect(body.size == 17 && body.lineHeight == 26 && body.spacingAfter == 13)
@@ -70,24 +71,44 @@ struct ThemeTests {
 
     @Test func zoomStepsAndRounding() {
         #expect(TypeScale.zoomSteps.first == 0.6 && TypeScale.zoomSteps.last == 2.0 && TypeScale.zoomSteps.count == 15)
-        let zoomed = TypeScale(theme: .paper, zoom: 1.2)
+        let zoomed = TypeScale(theme: .taalegari, zoom: 1.2)
         let body = zoomed.style(for: .body)
         #expect(body.size == 20.5)      // 17 × 1.2 = 20.4, half-point rounding
         #expect(body.lineHeight == 32)  // 26 × 1.2 = 31.2, rounded up
         #expect(TypeScale.clampZoom(0.1) == 0.6)
         #expect(TypeScale.clampZoom(9) == 2.0)
         #expect([1.2, 1.3].contains(TypeScale.clampZoom(1.25)))
-        #expect(TypeScale(theme: .paper).zoomed(in: 1).zoom == 1.1)
-        #expect(TypeScale(theme: .paper).zoomed(in: -1).zoom == 0.9)
-        #expect(TypeScale(theme: .paper, zoom: 2).zoomed(in: 1).zoom == 2)
+        #expect(TypeScale(theme: .taalegari).zoomed(in: 1).zoom == 1.1)
+        #expect(TypeScale(theme: .taalegari).zoomed(in: -1).zoom == 0.9)
+        #expect(TypeScale(theme: .taalegari, zoom: 2).zoomed(in: 1).zoom == 2)
     }
 
     @Test func themeMetricsScaleTheTable() {
-        var theme = Theme.paper
+        var theme = Theme.taalegari
         theme.metrics.bodySize = 34
         let scale = TypeScale(theme: theme)
         #expect(scale.factor == 2)
         #expect(scale.style(for: .body).size == 34)
         #expect(scale.style(for: .heading(1)).lineHeight == 80)
+    }
+
+    @Test func builtInThemesCarryThePRDNamesAndPalettes() {
+        #expect(Theme.all.map(\.name) == ["Taalegari", "Kari", "Bili", "Neeli"])
+        #expect(Theme.named("KARI") == .kari)
+        #expect(Theme.named("ತಾಳೆಗರಿ") == .taalegari)
+        #expect(Theme.named("paper") == nil)
+        #expect(Theme.taalegari.colors.bg.hexString == "#F5EDDC")
+        #expect(Theme.taalegari.colors.accent.hexString == "#A63D2B")
+        #expect(Theme.kari.colors.accent.hexString == "#F2B84B")
+        #expect(Theme.bili.colors.accent.hexString == "#0A5BD8")
+        #expect(Theme.neeli.colors.bg.hexString == "#14171F")
+        #expect(Theme.taalegari.fonts.body.first == "Source Serif 4")
+        #expect(Theme.kari.fonts.mono.first == "IBM Plex Mono")
+    }
+
+    @Test(arguments: Theme.all)
+    func syntaxTokensAreDistinct(theme: Theme) {
+        let colors = theme.colors.code.all.map(\.color)
+        #expect(Set(colors).count == colors.count, "\(theme.name) reuses a syntax colour")
     }
 }

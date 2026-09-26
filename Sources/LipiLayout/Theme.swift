@@ -53,22 +53,58 @@ public struct ThemeColor: Sendable, Hashable {
     }
 }
 
+/// Code-highlight token colours (PRD §8.4 `syntax.*`). `ThemeTests` validates
+/// each against `codeBg` at 4.5:1.
+public struct SyntaxColors: Sendable, Hashable {
+    public var keyword: ThemeColor
+    public var string: ThemeColor
+    public var comment: ThemeColor
+    public var number: ThemeColor
+    public var type: ThemeColor
+    public var function: ThemeColor
+
+    public init(keyword: ThemeColor, string: ThemeColor, comment: ThemeColor, number: ThemeColor, type: ThemeColor,
+                function: ThemeColor) {
+        self.keyword = keyword
+        self.string = string
+        self.comment = comment
+        self.number = number
+        self.type = type
+        self.function = function
+    }
+
+    public var all: [(name: String, color: ThemeColor)] {
+        [("keyword", keyword), ("string", string), ("comment", comment), ("number", number), ("type", type),
+         ("function", function)]
+    }
+}
+
 public struct ThemeColors: Sendable, Hashable {
     public var bg: ThemeColor
     public var bgElevated: ThemeColor
     public var ink: ThemeColor
     public var ink2: ThemeColor
     public var muted: ThemeColor
+    /// Revealed Markdown syntax markers (`**`, `#`, fences).
     public var syntax: ThemeColor
     public var border: ThemeColor
     public var codeBg: ThemeColor
     public var accent: ThemeColor
+    public var accent2: ThemeColor
     public var selection: ThemeColor
+    /// Find-match and mark highlight.
+    public var highlight: ThemeColor
     public var caret: ThemeColor
+    public var error: ThemeColor
+    public var warning: ThemeColor
+    public var ok: ThemeColor
+    /// Fenced-code token colours.
+    public var code: SyntaxColors
 
     public init(bg: ThemeColor, bgElevated: ThemeColor, ink: ThemeColor, ink2: ThemeColor, muted: ThemeColor,
-                syntax: ThemeColor, border: ThemeColor, codeBg: ThemeColor, accent: ThemeColor, selection: ThemeColor,
-                caret: ThemeColor) {
+                syntax: ThemeColor, border: ThemeColor, codeBg: ThemeColor, accent: ThemeColor, accent2: ThemeColor,
+                selection: ThemeColor, highlight: ThemeColor, caret: ThemeColor, error: ThemeColor, warning: ThemeColor,
+                ok: ThemeColor, code: SyntaxColors) {
         self.bg = bg
         self.bgElevated = bgElevated
         self.ink = ink
@@ -78,17 +114,29 @@ public struct ThemeColors: Sendable, Hashable {
         self.border = border
         self.codeBg = codeBg
         self.accent = accent
+        self.accent2 = accent2
         self.selection = selection
+        self.highlight = highlight
         self.caret = caret
+        self.error = error
+        self.warning = warning
+        self.ok = ok
+        self.code = code
     }
 
     /// Text tokens and the backgrounds they are drawn on. The WCAG validator
     /// (`ThemeTests`) requires 4.5:1 for every pair.
     public var textPairs: [(name: String, text: ThemeColor, background: ThemeColor)] {
-        [("ink/bg", ink, bg), ("ink2/bg", ink2, bg), ("muted/bg", muted, bg), ("syntax/bg", syntax, bg),
-         ("accent/bg", accent, bg), ("ink/codeBg", ink, codeBg), ("ink2/codeBg", ink2, codeBg),
-         ("muted/codeBg", muted, codeBg), ("ink/bgElevated", ink, bgElevated), ("ink2/bgElevated", ink2, bgElevated),
-         ("muted/bgElevated", muted, bgElevated), ("ink/selection", ink, selection.over(bg))]
+        var pairs: [(name: String, text: ThemeColor, background: ThemeColor)] = [
+            ("ink/bg", ink, bg), ("ink2/bg", ink2, bg), ("muted/bg", muted, bg), ("syntax/bg", syntax, bg),
+            ("accent/bg", accent, bg), ("accent2/bg", accent2, bg), ("error/bg", error, bg), ("warning/bg", warning, bg),
+            ("ok/bg", ok, bg), ("ink/codeBg", ink, codeBg), ("ink2/codeBg", ink2, codeBg),
+            ("muted/codeBg", muted, codeBg), ("ink/bgElevated", ink, bgElevated), ("ink2/bgElevated", ink2, bgElevated),
+            ("muted/bgElevated", muted, bgElevated), ("ink/selection", ink, selection.over(bg)),
+            ("ink/highlight", ink, highlight.over(bg)),
+        ]
+        for token in code.all { pairs.append(("syntax.\(token.name)/codeBg", token.color, codeBg)) }
+        return pairs
     }
 }
 
@@ -161,49 +209,109 @@ public struct Theme: Sendable, Hashable {
         heading: ["Source Serif 4", "Charter", "Georgia"],
         mono: ["JetBrains Mono", "SF Mono", "Menlo"]
     )
+    static let plexFonts = ThemeFonts(
+        body: ["IBM Plex Serif", "Charter", "Georgia"],
+        heading: ["IBM Plex Serif", "Charter", "Georgia"],
+        mono: ["IBM Plex Mono", "SF Mono", "Menlo"]
+    )
+    static let systemFonts = ThemeFonts(
+        body: ["SF Pro Text", "Helvetica Neue"],
+        heading: ["SF Pro Display", "Helvetica Neue"],
+        mono: ["SF Mono", "Menlo"]
+    )
     static let sansFonts = ThemeFonts(
         body: ["Inter", "Helvetica Neue"],
         heading: ["Inter", "Helvetica Neue"],
         mono: ["JetBrains Mono", "SF Mono", "Menlo"]
     )
 
-    /// Warm light theme (the PRD's example: bg #F5EDDC, ink #2B2118).
-    public static let paper = Theme(
-        name: "Paper", isDark: false, fonts: serifFonts,
-        colors: ThemeColors(
-            bg: ThemeColor(hex: 0xF5EDDC), bgElevated: ThemeColor(hex: 0xFBF6EA), ink: ThemeColor(hex: 0x2B2118),
-            ink2: ThemeColor(hex: 0x584A3D), muted: ThemeColor(hex: 0x6B5D4E), syntax: ThemeColor(hex: 0x6B5D4E),
-            border: ThemeColor(hex: 0xD6C8AE), codeBg: ThemeColor(hex: 0xECE3CF), accent: ThemeColor(hex: 0x8A3B12),
-            selection: ThemeColor(hex: 0xC9A86A, alpha: 0.35), caret: ThemeColor(hex: 0x2B2118)))
+    /// Kannada name shown beside the theme name (§8.4).
+    public var nativeName: String {
+        switch name {
+        case "Taalegari": return "ತಾಳೆಗರಿ"
+        case "Kari": return "ಕರಿ"
+        case "Bili": return "ಬಿಳಿ"
+        case "Neeli": return "ನೀಲಿ"
+        default: return name
+        }
+    }
 
-    /// Neutral light theme.
-    public static let snow = Theme(
-        name: "Snow", isDark: false, fonts: sansFonts,
-        colors: ThemeColors(
-            bg: ThemeColor(hex: 0xFFFFFF), bgElevated: ThemeColor(hex: 0xF7F7F8), ink: ThemeColor(hex: 0x1D1D1F),
-            ink2: ThemeColor(hex: 0x4A4A4F), muted: ThemeColor(hex: 0x646469), syntax: ThemeColor(hex: 0x646469),
-            border: ThemeColor(hex: 0xD9D9DE), codeBg: ThemeColor(hex: 0xF0F0F3), accent: ThemeColor(hex: 0x1F5FBF),
-            selection: ThemeColor(hex: 0x3B82F6, alpha: 0.25), caret: ThemeColor(hex: 0x1D1D1F)))
+    /// The theme Auto switches to when the system appearance flips (§8.4):
+    /// Taalegari and Kari, Bili and Neeli.
+    public var pair: Theme {
+        switch name {
+        case "Taalegari": return .kari
+        case "Kari": return .taalegari
+        case "Bili": return .neeli
+        case "Neeli": return .bili
+        default: return self
+        }
+    }
 
-    /// Warm dark theme.
-    public static let ink = Theme(
-        name: "Ink", isDark: true, fonts: serifFonts,
-        colors: ThemeColors(
-            bg: ThemeColor(hex: 0x1C1A17), bgElevated: ThemeColor(hex: 0x262320), ink: ThemeColor(hex: 0xEDE6D6),
-            ink2: ThemeColor(hex: 0xC4BAA6), muted: ThemeColor(hex: 0xA79D8B), syntax: ThemeColor(hex: 0xA79D8B),
-            border: ThemeColor(hex: 0x3E392F), codeBg: ThemeColor(hex: 0x27241F), accent: ThemeColor(hex: 0xE39A5E),
-            selection: ThemeColor(hex: 0xC9A86A, alpha: 0.3), caret: ThemeColor(hex: 0xEDE6D6)))
+    /// Case-insensitive lookup by Latin or Kannada name.
+    public static func named(_ name: String) -> Theme? {
+        let key = name.lowercased()
+        return all.first { $0.name.lowercased() == key || $0.nativeName == name }
+    }
 
-    /// Neutral dark theme.
-    public static let slate = Theme(
-        name: "Slate", isDark: true, fonts: sansFonts,
+    /// ತಾಳೆಗರಿ (palm leaf): warm parchment, the default light theme.
+    public static let taalegari = Theme(
+        name: "Taalegari", isDark: false, fonts: serifFonts,
         colors: ThemeColors(
-            bg: ThemeColor(hex: 0x1E2126), bgElevated: ThemeColor(hex: 0x272B31), ink: ThemeColor(hex: 0xE6E8EB),
-            ink2: ThemeColor(hex: 0xB8BDC5), muted: ThemeColor(hex: 0x9AA1AA), syntax: ThemeColor(hex: 0x9AA1AA),
-            border: ThemeColor(hex: 0x3A4048), codeBg: ThemeColor(hex: 0x282C33), accent: ThemeColor(hex: 0x7FB3FF),
-            selection: ThemeColor(hex: 0x3B82F6, alpha: 0.3), caret: ThemeColor(hex: 0xE6E8EB)))
+            bg: ThemeColor(hex: 0xF5EDDC), bgElevated: ThemeColor(hex: 0xEFE4CF), ink: ThemeColor(hex: 0x2B2118),
+            ink2: ThemeColor(hex: 0x5C4B3B), muted: ThemeColor(hex: 0x756049), syntax: ThemeColor(hex: 0x756049),
+            border: ThemeColor(hex: 0xD9CBB0), codeBg: ThemeColor(hex: 0xEBDFC6), accent: ThemeColor(hex: 0xA63D2B),
+            accent2: ThemeColor(hex: 0x8A6508), selection: ThemeColor(hex: 0xE4C98B), highlight: ThemeColor(hex: 0xF0D78C),
+            caret: ThemeColor(hex: 0xA63D2B), error: ThemeColor(hex: 0x9B2C1E), warning: ThemeColor(hex: 0x8A6508),
+            ok: ThemeColor(hex: 0x3E6B3A),
+            code: SyntaxColors(keyword: ThemeColor(hex: 0x9B2C1E), string: ThemeColor(hex: 0x3E6B3A),
+                               comment: ThemeColor(hex: 0x6E5A45), number: ThemeColor(hex: 0x80510A),
+                               type: ThemeColor(hex: 0x5A4480), function: ThemeColor(hex: 0x2C5877))))
 
-    public static let all: [Theme] = [paper, snow, ink, slate]
+    /// ಕರಿ (charcoal): the default dark theme, Taalegari's pair.
+    public static let kari = Theme(
+        name: "Kari", isDark: true, fonts: plexFonts,
+        colors: ThemeColors(
+            bg: ThemeColor(hex: 0x121212), bgElevated: ThemeColor(hex: 0x1B1B1B), ink: ThemeColor(hex: 0xECEAE5),
+            ink2: ThemeColor(hex: 0xB5B1A8), muted: ThemeColor(hex: 0x8C877D), syntax: ThemeColor(hex: 0x8C877D),
+            border: ThemeColor(hex: 0x2C2C2C), codeBg: ThemeColor(hex: 0x1E1E1E), accent: ThemeColor(hex: 0xF2B84B),
+            accent2: ThemeColor(hex: 0xF08A73), selection: ThemeColor(hex: 0x3D3322), highlight: ThemeColor(hex: 0x4A3A16),
+            caret: ThemeColor(hex: 0xF2B84B), error: ThemeColor(hex: 0xFF7B6B), warning: ThemeColor(hex: 0xF2B84B),
+            ok: ThemeColor(hex: 0x8FD18A),
+            code: SyntaxColors(keyword: ThemeColor(hex: 0xF08A73), string: ThemeColor(hex: 0x8FD18A),
+                               comment: ThemeColor(hex: 0x8C877D), number: ThemeColor(hex: 0xF2B84B),
+                               type: ThemeColor(hex: 0x8CC4E8), function: ThemeColor(hex: 0xE6C98F))))
+
+    /// ಬಿಳಿ (white): neutral light with system fonts.
+    public static let bili = Theme(
+        name: "Bili", isDark: false, fonts: systemFonts,
+        colors: ThemeColors(
+            bg: ThemeColor(hex: 0xFFFFFF), bgElevated: ThemeColor(hex: 0xF5F5F7), ink: ThemeColor(hex: 0x1D1D1F),
+            ink2: ThemeColor(hex: 0x515154), muted: ThemeColor(hex: 0x6E6E73), syntax: ThemeColor(hex: 0x6E6E73),
+            border: ThemeColor(hex: 0xD2D2D7), codeBg: ThemeColor(hex: 0xF2F2F4), accent: ThemeColor(hex: 0x0A5BD8),
+            accent2: ThemeColor(hex: 0xB04D0E), selection: ThemeColor(hex: 0xB4D5FE), highlight: ThemeColor(hex: 0xFFE58A),
+            caret: ThemeColor(hex: 0x0A5BD8), error: ThemeColor(hex: 0xC41E1E), warning: ThemeColor(hex: 0x8A5A00),
+            ok: ThemeColor(hex: 0x1F7A3A),
+            code: SyntaxColors(keyword: ThemeColor(hex: 0xA12A7C), string: ThemeColor(hex: 0x1F7A3A),
+                               comment: ThemeColor(hex: 0x6A6A6F), number: ThemeColor(hex: 0xA8490D),
+                               type: ThemeColor(hex: 0x0B6780), function: ThemeColor(hex: 0x0A55C8))))
+
+    /// ನೀಲಿ (blue): dark navy, Bili's pair. `muted` is #808798 rather than the
+    /// PRD's #7C8394, which measures 4.33:1 on bgElevated and 4.39:1 on codeBg.
+    public static let neeli = Theme(
+        name: "Neeli", isDark: true, fonts: sansFonts,
+        colors: ThemeColors(
+            bg: ThemeColor(hex: 0x14171F), bgElevated: ThemeColor(hex: 0x1B1F2A), ink: ThemeColor(hex: 0xD6DAE3),
+            ink2: ThemeColor(hex: 0xA3A9B8), muted: ThemeColor(hex: 0x808798), syntax: ThemeColor(hex: 0x808798),
+            border: ThemeColor(hex: 0x2A3040), codeBg: ThemeColor(hex: 0x1A1E28), accent: ThemeColor(hex: 0x8FB4FF),
+            accent2: ThemeColor(hex: 0xF5C97A), selection: ThemeColor(hex: 0x2B3B5E), highlight: ThemeColor(hex: 0x4A4020),
+            caret: ThemeColor(hex: 0x8FB4FF), error: ThemeColor(hex: 0xFF8A80), warning: ThemeColor(hex: 0xF5C97A),
+            ok: ThemeColor(hex: 0x8BD5A0),
+            code: SyntaxColors(keyword: ThemeColor(hex: 0xC9A0F2), string: ThemeColor(hex: 0x8BD5A0),
+                               comment: ThemeColor(hex: 0x858CA0), number: ThemeColor(hex: 0xF5C97A),
+                               type: ThemeColor(hex: 0x7FD4C8), function: ThemeColor(hex: 0x8FB4FF))))
+
+    public static let all: [Theme] = [taalegari, kari, bili, neeli]
 }
 
 // MARK: - Type scale (PRD §8.2)

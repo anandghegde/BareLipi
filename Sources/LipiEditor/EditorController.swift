@@ -58,7 +58,7 @@ public final class EditorController {
     private var pendingModeToggle = false
     private var pendingToggleAnchor: Int? = nil
 
-    public init(text: String = "", engine: LayoutEngineKind = .lipi, theme: Theme = .paper, zoom: CGFloat = 1,
+    public init(text: String = "", engine: LayoutEngineKind = .lipi, theme: Theme = .taalegari, zoom: CGFloat = 1,
                 preset: RevealPreset = .balanced, viewportWidth: CGFloat = 800) {
         self.engine = engine
         buffer = SourceBuffer(text)

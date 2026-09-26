@@ -62,7 +62,7 @@ struct ScriptRunTests {
 
 @Suite("Font cascade (§8.3)")
 struct FontCascadeTests {
-    let cascade = FontCascade(theme: .paper)
+    let cascade = FontCascade(theme: .taalegari)
 
     @Test func tallScriptsAndSizeFactors() {
         #expect(Script.kannada.lineHeightClass == .tall)
@@ -95,9 +95,9 @@ struct FontCascadeTests {
     }
 
     @Test func hanCascadeFollowsLanguage() {
-        let ja = FontCascade(theme: .paper, language: "ja").families(for: .han)
-        let hans = FontCascade(theme: .paper, language: "zh-Hans").families(for: .han)
-        let hant = FontCascade(theme: .paper, language: "zh-Hant").families(for: .han)
+        let ja = FontCascade(theme: .taalegari, language: "ja").families(for: .han)
+        let hans = FontCascade(theme: .taalegari, language: "zh-Hans").families(for: .han)
+        let hant = FontCascade(theme: .taalegari, language: "zh-Hant").families(for: .han)
         #expect(ja.first?.contains("Hiragino") == true)
         #expect(hans.first?.contains("PingFang SC") == true)
         #expect(hant.first?.contains("PingFang TC") == true)
@@ -140,8 +140,8 @@ struct FontCascadeTests {
     }
 
     @Test func themesResolveDifferentBodyFamilies() {
-        let serif = FontCascade(theme: .paper).resolved[.body]!
-        let sans = FontCascade(theme: .snow).resolved[.body]!
+        let serif = FontCascade(theme: .taalegari).resolved[.body]!
+        let sans = FontCascade(theme: .bili).resolved[.body]!
         #expect(serif != sans)
     }
 }

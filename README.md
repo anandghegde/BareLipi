@@ -39,7 +39,7 @@ swift run -c release lipi-bench              # core and layout-spike micro-bench
 swift run -c release lipi-fixtures           # writes Fixtures/perf/*.md (ignored by git)
 swift run -c release BareLipi                # the editor with a welcome document
 swift run -c release BareLipi path/to/doc.md
-swift run -c release BareLipi --fixture lorem-50k --engine textkit2 --theme ink --zoom 1.2
+swift run -c release BareLipi --fixture lorem-50k --engine textkit2 --theme kari --zoom 1.2
 swift run -c release BareLipi --fixture kannada-20k --measure 10   # types, scrolls, prints frame stats, quits
 swift test -c release --filter LipiPerfTests                        # §9.1 harness, comparable numbers
 LIPI_PERF_GATE=1 swift test -c release --filter LipiPerfTests       # fail over budget or >10 % above baseline

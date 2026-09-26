@@ -24,7 +24,7 @@ public final class LipiDocument: NSDocument {
     private var activationObserver: NSObjectProtocol?
     /// Set while the text is replaced programmatically (open, reload), so
     /// the change does not mark the document edited.
-    private var isLoading = false
+    var isLoading = false
     private var deletedOnDisk = false
     private var pendingRestore: RestorableEditorState?
     /// Consumed by the next `showWindows()`: open in a separate window
@@ -46,8 +46,14 @@ public final class LipiDocument: NSDocument {
     public override class var preservesVersions: Bool { true }
     public override class var usesUbiquitousStorage: Bool { false }
 
-    /// The document is read-only until a non-UTF-8 file is converted.
-    public var isReadOnly: Bool { originalBytes != nil }
+    /// The file is locked (`uchg`) or not writable; set at each read.
+    public internal(set) var isFileLocked = false
+    /// The document is read-only while its file is locked, and until a
+    /// non-UTF-8 file is converted. The editor refuses edits up front.
+    public var isReadOnly: Bool { originalBytes != nil || isFileLocked }
+    /// Pasted and dropped images (§6.7).
+    public internal(set) lazy var assets = AssetStore(documentURL: { [weak self] in self?.fileURL },
+                                                     text: { [weak self] in self?.frontMatterText ?? "" })
 
     // MARK: Windows
 
@@ -67,9 +73,11 @@ public final class LipiDocument: NSDocument {
             self?.editorDidChange(change)
         }
         windowController.onScroll = { [weak self] in self?.invalidateRestorableState() }
+        controller.onRefusedEdit = { [weak self] in self?.editRefused() }
+        windowController.editor.imageHandler = self
         addWindowController(windowController)
         self.windowController = windowController
-        if isReadOnly { showEncodingBar() }
+        updateReadOnlyState()
         if let state = pendingRestore {
             pendingRestore = nil
             windowController.apply(state)
@@ -90,6 +98,7 @@ public final class LipiDocument: NSDocument {
     }
 
     public override func close() {
+        if fileURL == nil { assets.discardUnsaved() }
         monitor?.stop()
         monitor = nil
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
@@ -100,17 +109,6 @@ public final class LipiDocument: NSDocument {
     private func editorDidChange(_ change: EditorChange) {
         invalidateRestorableState()
         guard change.textChanged, !isLoading else { return }
-        if isReadOnly {
-            // Non-UTF-8 files are read-only until converted: take the edit back.
-            DispatchQueue.main.async { [weak self] in
-                guard let controller = self?.windowController?.controller, controller.canUndo else { return }
-                self?.isLoading = true
-                controller.undo()
-                self?.isLoading = false
-                NSSound.beep()
-            }
-            return
-        }
         updateChangeCount(.changeDone)
     }
 
@@ -118,24 +116,25 @@ public final class LipiDocument: NSDocument {
 
     public nonisolated override func read(from url: URL, ofType typeName: String) throws {
         var coordinationError: NSError?
-        var result: Result<(Data, FileStat), Error>?
+        var result: Result<(Data, FileStat, Bool), Error>?
         NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: url, options: [], error: &coordinationError) { target in
             result = Result {
                 let data = try Data(contentsOf: target)
-                return (data, try FileStat.of(path: target.path))
+                return (data, try FileStat.of(path: target.path), LipiDocument.isLocked(target))
             }
         }
         if let coordinationError { throw coordinationError }
-        guard let (data, stat) = try result?.get() else { throw CocoaError(.fileReadUnknown) }
+        guard let (data, stat, locked) = try result?.get() else { throw CocoaError(.fileReadUnknown) }
         let decoded = TextCodec.decode(data)
         let fingerprint = FileFingerprint(stat: stat, bytes: data)
         // canConcurrentlyReadDocuments is false, so NSDocument reads on the main thread.
-        MainActor.assumeIsolated { self.didRead(decoded, fingerprint: fingerprint, url: url) }
+        MainActor.assumeIsolated { self.didRead(decoded, fingerprint: fingerprint, url: url, locked: locked) }
     }
 
-    private func didRead(_ decoded: DecodedText, fingerprint: FileFingerprint, url: URL) {
+    private func didRead(_ decoded: DecodedText, fingerprint: FileFingerprint, url: URL, locked: Bool = false) {
         format = decoded.format
         originalBytes = decoded.originalBytes
+        isFileLocked = locked
         self.fingerprint = fingerprint
         deletedOnDisk = false
         if let windowController {
@@ -143,7 +142,7 @@ public final class LipiDocument: NSDocument {
             isLoading = true
             windowController.reload(text: decoded.text)
             isLoading = false
-            if isReadOnly { showEncodingBar() } else { windowController.content.hide(.encoding) }
+            updateReadOnlyState()
             windowController.content.hide(.externalChange)
             windowController.content.hide(.deleted)
         } else {
@@ -177,6 +176,9 @@ public final class LipiDocument: NSDocument {
             // Do not resurrect a file deleted on disk behind the user's back
             // by autosaving; the bar offers Save As.
             let refuse = self.deletedOnDisk && saveOperation == .autosaveInPlaceOperation && url == self.fileURL
+            if self.fileURL == nil, saveOperation == .saveOperation || saveOperation == .saveAsOperation {
+                self.adoptUnsavedAssets(savingTo: url)
+            }
             return (self.currentBytes(), refuse, self.format.isUTF8)
         }
         if refuse { throw CocoaError(.userCancelled) }
@@ -212,7 +214,7 @@ public final class LipiDocument: NSDocument {
 
     // MARK: Encoding
 
-    private func showEncodingBar() {
+    func showEncodingBar() {
         guard let content = windowController?.content else { return }
         let message = "This file is \(format.encodingName), not UTF-8. It is open read-only."
         content.show(NoticeBar(kind: .encoding, message: message, actions: [
@@ -222,11 +224,11 @@ public final class LipiDocument: NSDocument {
 
     /// Drops the original bytes: the next save writes the text as UTF-8.
     public func convertToUTF8() {
-        guard isReadOnly else { return }
+        guard originalBytes != nil else { return }
         originalBytes = nil
         format.encoding = .utf8
         format.hasBOM = false
-        windowController?.content.hide(.encoding)
+        updateReadOnlyState()
         updateChangeCount(.changeDone)
     }
 
@@ -316,7 +318,7 @@ public final class LipiDocument: NSDocument {
         windowController?.reload(text: decoded.text)
         isLoading = false
         updateChangeCount(.changeCleared)
-        if isReadOnly { showEncodingBar() }
+        updateReadOnlyState()
         windowController?.content.hide(.externalChange)
     }
 

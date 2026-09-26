@@ -24,6 +24,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public var alwaysShowsCaret = false
     /// Find and Replace state; its matches are highlighted while active.
     public var findSession: FindSession?
+    /// Stores pasted and dropped images and picks the paths links use
+    /// (the document's `AssetStore`). Without one, images are not accepted.
+    public weak var imageHandler: EditorImageHandler?
 
     public init(controller: EditorController, frame: NSRect = NSRect(x: 0, y: 0, width: 800, height: 600)) {
         self.controller = controller
@@ -36,6 +39,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         caret.onToggle = { [weak self] in self?.invalidateCaret() }
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
+        registerForDraggedTypes(EditorView.imageDragTypes)
         syncFrameHeight()
     }
 
@@ -333,7 +337,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        controller.insertImage(path: url.path)
+        controller.insertImage(path: imageHandler?.linkPath(forExistingImage: url) ?? url.path)
     }
     @objc public func setHeading1(_ sender: Any?) { controller.setHeading(level: 1) }
     @objc public func setHeading2(_ sender: Any?) { controller.setHeading(level: 2) }
@@ -376,6 +380,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     @objc public func paste(_ sender: Any?) {
+        if pasteImages(from: NSPasteboard.general) { return }
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
         controller.insert(text)
     }
@@ -386,13 +391,21 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         switch item.action {
         case #selector(undo(_:)): return controller.canUndo
         case #selector(redo(_:)): return controller.canRedo
-        case #selector(copy(_:)), #selector(cut(_:)): return !controller.selection.isEmpty
+        case #selector(copy(_:)): return !controller.selection.isEmpty
+        case #selector(cut(_:)): return isEditable && !controller.selection.isEmpty
+        case #selector(paste(_:)): return isEditable
         case #selector(toggleSourceMode(_:)):
             item.state = controller.mode == .source ? .on : .off
             return true
         default: return true
         }
     }
+
+    // MARK: Drag and drop (images, P0-07)
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { imageDragOperation(sender) }
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { imageDragOperation(sender) }
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { performImageDrop(sender) }
 
     // MARK: Mouse
 

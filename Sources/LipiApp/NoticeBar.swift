@@ -7,7 +7,7 @@ import AppKit
 public final class NoticeBar: NSView {
     /// What the bar is about; a window shows at most one bar per kind.
     public enum Kind: Int, Sendable, Comparable {
-        case externalChange, deleted, fileError, encoding
+        case externalChange, deleted, fileError, encoding, locked
         public static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
     }
 

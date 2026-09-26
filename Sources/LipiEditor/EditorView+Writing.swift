@@ -227,8 +227,21 @@ extension EditorView {
         return (scroll.contentSize.height * (1 - typewriterFraction)).rounded(.up)
     }
 
+    /// Blank space above the text in typewriter mode, so the first line can
+    /// reach the typewriter line. It lies at negative y: the view's frame and
+    /// bounds both start at `-typewriterTopPadding`, so document, view and
+    /// clip-view coordinates stay the same and the clip view may scroll
+    /// above the text.
+    var typewriterTopPadding: CGFloat {
+        guard typewriterMode, let scroll = enclosingScrollView else { return 0 }
+        return (scroll.contentSize.height * typewriterFraction).rounded(.up)
+    }
+
+    /// The padding in effect: how far above y = 0 the view extends.
+    public var topPadding: CGFloat { -frame.minY }
+
     /// Scrolls so the caret's line sits at `typewriterFraction` of the
-    /// viewport height (as far as the document's top allows); eased over
+    /// viewport height (the padding lets the first and last lines reach it); eased over
     /// 80 ms when `typewriterEases` and motion is allowed.
     public func centerCaret(_ caretRect: CGRect? = nil) {
         guard let scroll = enclosingScrollView else { return }

@@ -81,6 +81,33 @@ open class SettingsFormPane: NSViewController {
         return popup
     }
 
+    /// A continuous slider over `range` in steps of `step`, with its value
+    /// shown beside it by `format`; `set` runs as it moves.
+    @discardableResult
+    func slider(_ label: String, range: ClosedRange<Double>, step: Double, get: Double,
+                format: @escaping (Double) -> String, set: @escaping (Double) -> Void) -> NSSlider {
+        let value = NSTextField(labelWithString: format(get))
+        value.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        let t = target { control in
+            let v = (control.doubleValue / step).rounded() * step
+            value.stringValue = format(v)
+            set(v)
+        }
+        let slider = NSSlider(value: get, minValue: range.lowerBound, maxValue: range.upperBound,
+                              target: t, action: #selector(ClosureTarget.fire(_:)))
+        slider.numberOfTickMarks = Int(((range.upperBound - range.lowerBound) / step).rounded()) + 1
+        slider.allowsTickMarkValuesOnly = true
+        slider.isContinuous = true
+        slider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        slider.setAccessibilityLabel(label.trimmingCharacters(in: CharacterSet(charactersIn: ":")))
+        let stack = NSStackView(views: [slider, value])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        row(label, stack)
+        return slider
+    }
+
     /// A small explanatory line under the previous row.
     func note(_ text: String) {
         let field = NSTextField(wrappingLabelWithString: text)

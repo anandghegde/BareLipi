@@ -23,7 +23,11 @@ private func controls<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
     return out
 }
 
+// Main actor, as in the app: setters post `AppSettings.didChange`
+// synchronously, and open windows (other suites create some) observe it on
+// the main actor.
 @Suite("Settings: typed defaults")
+@MainActor
 struct AppSettingsTests {
     @Test func defaultsMatchThePRD() {
         let s = AppSettings(defaults: scratchDefaults())
@@ -106,6 +110,45 @@ struct SettingsPanesTests {
         marker.selectItem(at: 1)
         _ = marker.target?.perform(marker.action, with: marker)
         #expect(s.emphasisMarker == "_")
+    }
+
+    @Test func editingPaneSetsTheTypewriterLineInOpenWindowsAtOnce() throws {
+        // Open windows read the standard defaults; put back what was there.
+        let defaults = UserDefaults.standard
+        let keys = [WritingSettings.typewriterFractionKey, WritingSettings.typewriterEaseKey, WritingSettings.focusScopeKey]
+        let saved = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) { defaults.set(value, forKey: key) }
+            NotificationCenter.default.post(name: WritingSettings.didChange, object: nil)
+        }
+        defaults.set(0.5, forKey: WritingSettings.typewriterFractionKey)
+        defaults.set(false, forKey: WritingSettings.typewriterEaseKey)
+        let text = (0..<100).map { "Line \($0)" }.joined(separator: "\n\n")
+        let wc = DocumentWindowController(controller: EditorController(text: text, viewportWidth: 800), theme: .taalegari,
+                                          contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        wc.editor.typewriterMode = true
+        let pane = EditorSettingsPane(settings: AppSettings(defaults: defaults))
+        let slider = try #require(controls(NSSlider.self, in: pane.view).first)
+        #expect(slider.minValue == 0.3 && slider.maxValue == 0.7 && slider.doubleValue == 0.5)
+        #expect(controls(NSTextField.self, in: pane.view).contains { $0.stringValue == "50 %" })
+        slider.doubleValue = 0.34
+        _ = slider.target?.perform(slider.action, with: slider)
+        #expect(abs(WritingSettings.typewriterFraction() - 0.35) < 0.001)
+        #expect(controls(NSTextField.self, in: pane.view).contains { $0.stringValue == "35 %" })
+        #expect(abs(wc.editor.typewriterFraction - 0.35) < 0.001)
+        // The first line reaches the new position.
+        wc.controller.moveCaret(to: 0)
+        let clip = wc.scrollView.contentView.bounds
+        let caret = wc.controller.caretRect(forSource: 0)
+        #expect(abs(caret.midY - (clip.minY + clip.height * 0.35)) <= 1)
+        let ease = try #require(controls(NSButton.self, in: pane.view).first { $0.title.contains("Ease typewriter") })
+        #expect(ease.state == .off)
+        ease.performClick(nil)
+        #expect(WritingSettings.typewriterEases() && wc.editor.typewriterEases)
+        let scope = try #require(controls(NSPopUpButton.self, in: pane.view).first { $0.itemTitles.contains { $0.contains("sentence") } })
+        scope.selectItem(at: 1)
+        _ = scope.target?.perform(scope.action, with: scope)
+        #expect(wc.editor.focusScopeKind == .sentence)
     }
 
     @Test func countsPaneShowsAndStoresTheSpeed() throws {

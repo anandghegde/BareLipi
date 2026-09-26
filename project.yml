@@ -1,0 +1,47 @@
+name: BareLipi
+options:
+  bundleIdPrefix: com.barelipi
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+packages:
+  LipiCore:
+    path: .
+targets:
+  BareLipiApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    dependencies:
+      - package: LipiCore
+        product: LipiCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleName: BareLipi
+        CFBundleDisplayName: BareLipi
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "15.0"
+        NSPrincipalClass: NSApplication
+        NSHumanReadableCopyright: ""
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Markdown Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [net.daringfireball.markdown, public.plain-text]
+            NSDocumentClass: $(PRODUCT_MODULE_NAME).LipiDocument
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        PRODUCT_NAME: BareLipi
+        PRODUCT_BUNDLE_IDENTIFIER: com.barelipi.app
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+    entitlements:
+      path: App/BareLipi.entitlements
+      properties: {}

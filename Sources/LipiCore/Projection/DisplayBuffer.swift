@@ -127,6 +127,9 @@ public struct BlockContext: Sendable, Hashable {
     public var isLoose: Bool = false
     /// A problem shown beside the block (malformed front matter, §6.13).
     public var warning: String? = nil
+    /// A `[toc]` placeholder showing the document's headings, one per line
+    /// (`Projection.tableOfContents`).
+    public var isTableOfContents = false
     public init() {}
 }
 

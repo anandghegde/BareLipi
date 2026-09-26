@@ -137,7 +137,9 @@ public struct RevealPolicy: Sendable {
                     let onClosing = info.isClosed && caret >= info.contentRange.upperBound
                     if onOpening || onClosing || info.contentRange.isEmpty { set.blocks.insert(block.id) }
                 }
-            case .paragraph, .list, .table, .tableRow, .tableCell, .htmlBlock, .linkReferenceDefinition:
+            case .paragraph:
+                if block.isTableOfContents, within(r) { set.blocks.insert(block.id) }
+            case .list, .table, .tableRow, .tableCell, .htmlBlock, .linkReferenceDefinition:
                 break
             }
             guard within(r) || block.kind == .paragraph else { return }

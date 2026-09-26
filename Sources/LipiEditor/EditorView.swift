@@ -535,6 +535,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         let point = convert(event.locationInWindow, from: nil)
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.toggleTask(at: point) { return }
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), handleFootnoteClick(at: point) { return }
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift), controller.jumpToTableOfContentsItem(at: point) { return }
         guard let offset = controller.sourceOffset(at: point) else { return }
         if event.clickCount == 2 {
             let word = controller.wordRange(at: offset)

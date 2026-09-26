@@ -92,12 +92,12 @@ extension Block {
     /// A paragraph that is exactly `[toc]` (any case): the table of contents
     /// placeholder (§6.13).
     public var isTableOfContents: Bool {
-        guard case .paragraph = kind, !inlines.isEmpty, inlines.count <= 3 else { return false }
+        guard range.count == 5, case .paragraph = kind, !inlines.isEmpty, inlines.count <= 3 else { return false }
         var s = ""
         for inline in inlines {
             guard case .text(let t) = inline.kind else { return false }
             s += t
         }
-        return range.count == 5 && s.lowercased() == "[toc]"
+        return s.lowercased() == "[toc]"
     }
 }

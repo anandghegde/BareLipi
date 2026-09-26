@@ -26,6 +26,8 @@ public struct ProjectedEntry: Sendable {
     /// when it has none.
     var notes: EntryNotes? = nil
     var footnoteKey: Int { notes?.key ?? 0 }
+    /// `TableOfContents.displayKey` for a `[toc]` entry, else 0.
+    var tocKey: Int = 0
 }
 
 /// The footnote references and definitions of one entry (normalized labels,
@@ -101,6 +103,9 @@ public struct Projection: Sendable {
     /// Set when the front matter does not parse (`FrontMatterData.error`):
     /// the block is shown as source with this warning (§6.13).
     public var frontMatterWarning: String? = nil
+    /// The headings a `[toc]` block shows (§6.13); nil when the document has
+    /// no `[toc]` (so nothing is computed).
+    public private(set) var tableOfContents: TableOfContents? = nil
     public private(set) var entries: [ProjectedEntry] = []
     public private(set) var reveal = RevealSet()
     /// Bytes covered; equals the document length after `update`.
@@ -220,6 +225,8 @@ public struct Projection: Sendable {
             numbering = FootnoteNumbering()
         }
 
+        let toc: TableOfContents? = !sourceMode && TableOfContents.isNeeded(in: index) ? TableOfContents(index: index) : nil
+
         var result = UpdateResult()
         var new: [ProjectedEntry] = []
         new.reserveCapacity(index.count)
@@ -231,8 +238,9 @@ public struct Projection: Sendable {
                 : malformed ? Self.warningKey(frontMatterWarning!) : revealKey(for: entry.block.id, reveal: reveal)
             let note = notes.isEmpty ? nil : notes[i]
             let noteKey = note?.key ?? 0
+            let tocKey = toc != nil && entry.hasBracket && entry.block.isTableOfContents ? toc!.displayKey : 0
             if !entry.isDirty, let j = old[entry.block.id], entries[j].length == entry.length, entries[j].revealKey == key,
-               entries[j].revision == entry.revision, entries[j].footnoteKey == noteKey {
+               entries[j].revision == entry.revision, entries[j].footnoteKey == noteKey, entries[j].tocKey == tocKey {
                 var kept = entries[j]
                 kept.start = start
                 new.append(kept)
@@ -254,13 +262,14 @@ public struct Projection: Sendable {
             }
             let blocks = sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == index.count - 1)
                 : build(entry: entry, start: start, rope: rope, reveal: malformed ? .everything : reveal, footnotes: numbering,
-                        regionStart: note?.regionStart ?? false, warning: malformed ? frontMatterWarning : nil)
+                        regionStart: note?.regionStart ?? false, warning: malformed ? frontMatterWarning : nil,
+                        toc: tocKey != 0 ? toc : nil)
             var rows: [Int] = []
             if !sourceMode, Self.isCaretKey(key), case .table = entry.block.kind {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
             }
             new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks,
-                                      revision: entry.revision, revealedRows: rows, notes: note))
+                                      revision: entry.revision, revealedRows: rows, notes: note, tocKey: tocKey))
             result.changedEntries.append(new.count - 1)
             result.rebuilt += 1
         }
@@ -282,6 +291,7 @@ public struct Projection: Sendable {
         entries = new
         length = index.length
         footnotes = numbering
+        tableOfContents = toc
         self.reveal = reveal
         return result
     }
@@ -315,13 +325,14 @@ public struct Projection: Sendable {
 
     private func build(entry: BlockEntry, start: Int, rope: LipiRope, reveal: RevealSet,
                        footnotes: FootnoteNumbering = FootnoteNumbering(), regionStart: Bool = false,
-                       warning: String? = nil) -> [DisplayBlock] {
+                       warning: String? = nil, toc: TableOfContents? = nil) -> [DisplayBlock] {
         var text = rope.string(in: start..<(start + entry.length))
         return text.withUTF8 { bytes in
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
             projector.footnotes = footnotes
             projector.footnoteRegionStart = regionStart
             projector.warning = warning
+            projector.toc = toc
             return projector.project(entry.block, spanLength: entry.length)
         }
     }
@@ -463,6 +474,8 @@ struct EntryProjector {
     var footnoteRegionStart = false
     /// Shown beside the entry's front matter block (it did not parse).
     var warning: String? = nil
+    /// Set for a `[toc]` entry: the headings it shows.
+    var toc: TableOfContents? = nil
 
     init(bytes: UnsafeBufferPointer<UInt8>, entryStart: Int, preset: RevealPreset, reveal: RevealSet) {
         self.bytes = bytes
@@ -629,7 +642,19 @@ struct EntryProjector {
         switch block.kind {
         case .paragraph:
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
-            emitInlines(block.inlines, &builder, style: [])
+            if let toc, !revealed, context.listDepth == 0, context.quoteDepth == 0, block.isTableOfContents {
+                // The live table of contents stands in for `[toc]`; the
+                // caret in the block reveals the placeholder.
+                context.isTableOfContents = true
+                let lines = toc.displayLines()
+                if lines.isEmpty {
+                    builder.replace(r, withBytes: Array("Table of Contents".utf8), style: .syntax)
+                } else {
+                    builder.replace(r, withBytes: Array(lines.joined(separator: "\n").utf8), style: .link)
+                }
+            } else {
+                emitInlines(block.inlines, &builder, style: [])
+            }
             builder.hide(builder.cursor..<end, .before)
         case .heading(let level, let isSetext):
             role = .heading(level: level)

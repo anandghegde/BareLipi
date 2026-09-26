@@ -14,14 +14,22 @@ public struct OutlineItem: Sendable, Hashable {
     /// The section: from the heading's line to the next heading of the same
     /// or a higher level (or the end of the document).
     public var section: Range<Int>
+    /// A heading inside a list, block quote or footnote (§6.8): shown and
+    /// navigable, but its section is not moved as a unit.
+    public var isNested = false
 }
 
-/// The document's outline: top-level ATX and setext headings in order.
-/// Headings inside code fences and HTML blocks are not headings to the
-/// parser, so they never appear. Titles are cached per block identity.
+/// The document's outline: ATX and setext headings in order, including
+/// those nested in lists, block quotes and footnote definitions. Headings
+/// inside code fences and HTML blocks are not headings to the parser, so
+/// they never appear. Titles are cached per block identity.
 public struct Outline: Sendable {
     public private(set) var items: [OutlineItem] = []
-    private var titles: [NodeID: (revision: UInt32, title: String, slug: String)] = [:]
+    /// The document title: the front matter `title` (§6.13), nil when there
+    /// is none or the front matter is malformed.
+    public private(set) var title: String?
+    private var titleKey: (id: NodeID, revision: UInt32, length: Int)?
+    private var titles: [NodeID: (revision: UInt32, title: String, slug: String, explicit: String?)] = [:]
 
     public init() {}
 
@@ -33,52 +41,80 @@ public struct Outline: Sendable {
     /// (not just offsets), so a view can skip reloading rows.
     @discardableResult
     public mutating func update(index: BlockIndex, rope: LipiRope) -> Bool {
+        let oldTitle = title
+        updateTitle(index: index, rope: rope)
         var next: [OutlineItem] = []
-        var seen: [String: Int] = [:]
+        var anchors = Headings.AnchorAllocator()
         next.reserveCapacity(items.count)
-        seen.reserveCapacity(items.count * 2)
         var misses = 0
         for i in 0..<index.count {
             let entry = index.entries[i]
-            guard case .heading(let level, _) = entry.block.kind else { continue }
+            let top = entry.block
+            // Most entries are paragraphs: skip them without a closure call.
+            if case .heading = top.kind {} else if !top.kind.isContainer { continue }
             let start = index.start(of: i)
-            let title: String, base: String
-            if let hit = titles[entry.block.id], hit.revision == entry.revision, !entry.isDirty {
-                title = hit.title
-                base = hit.slug
-            } else {
-                title = Outline.text(of: entry.block.inlines).trimmingCharacters(in: .whitespaces)
-                base = Outline.slug(title)
-                titles[entry.block.id] = (entry.revision, title, base)
-                misses += 1
+            Headings.forEach(in: top) { block, nested in
+                guard case .heading(let level, _) = block.kind else { return }
+                let title: String, base: String, explicit: String?
+                if let hit = titles[block.id], hit.revision == entry.revision, !entry.isDirty {
+                    title = hit.title
+                    base = hit.slug
+                    explicit = hit.explicit
+                } else {
+                    title = Headings.text(of: block.inlines).trimmingCharacters(in: .whitespaces)
+                    base = Headings.slug(title)
+                    explicit = Headings.explicitID(of: block.inlines)
+                    titles[block.id] = (entry.revision, title, base, explicit)
+                    misses += 1
+                }
+                let slug = anchors.anchor(slug: base, explicit: explicit)
+                let range = (start + block.range.lowerBound)..<(start + block.range.upperBound)
+                next.append(OutlineItem(id: block.id, level: level, title: title, slug: slug, range: range,
+                                        section: nested ? range.lowerBound..<(start + entry.length) : start..<rope.count,
+                                        isNested: nested))
             }
-            var slug = base
-            if let n = seen[base] {
-                var k = n
-                repeat { k += 1; slug = "\(base)-\(k)" } while seen[slug] != nil
-                seen[base] = k
-            }
-            seen[slug] = seen[slug] ?? 0
-            let range = (start + entry.block.range.lowerBound)..<(start + entry.block.range.upperBound)
-            next.append(OutlineItem(id: entry.block.id, level: level, title: title, slug: slug, range: range,
-                                    section: start..<rope.count))
         }
         // Section ends: the next heading at the same or a higher level.
+        // Top-level sections end only at top-level headings (moving one
+        // never splits a list); a nested section also ends with its block.
         var open: [Int] = []
-        for k in next.indices {
+        for k in next.indices where !next[k].isNested {
             while let last = open.last, next[last].level >= next[k].level {
                 next[last].section = next[last].section.lowerBound..<next[k].section.lowerBound
                 open.removeLast()
             }
             open.append(k)
         }
+        for k in next.indices where next[k].isNested {
+            var j = k + 1
+            while j < next.count, next[j].range.lowerBound < next[k].section.upperBound {
+                if next[j].level <= next[k].level {
+                    next[k].section = next[k].section.lowerBound..<next[j].range.lowerBound
+                    break
+                }
+                j += 1
+            }
+        }
         if misses > 0, titles.count > 2 * next.count + 64 {
             let live = Set(next.map(\.id))
             titles = titles.filter { live.contains($0.key) }
         }
-        let changed = next.count != items.count || zip(next, items).contains { $0.title != $1.title || $0.level != $1.level }
+        let changed = title != oldTitle || next.count != items.count
+            || zip(next, items).contains { $0.title != $1.title || $0.level != $1.level || $0.slug != $1.slug }
         items = next
         return changed
+    }
+
+    private mutating func updateTitle(index: BlockIndex, rope: LipiRope) {
+        guard let first = index.entries.first, first.block.kind.isFrontMatter else {
+            title = nil
+            titleKey = nil
+            return
+        }
+        if let k = titleKey, k.id == first.block.id, k.revision == first.revision, k.length == first.length, !first.isDirty { return }
+        titleKey = (first.block.id, first.revision, first.length)
+        let data = FrontMatterData.parse(index: index, rope: rope)
+        title = data?.isMalformed == false ? data?.title : nil
     }
 
     /// Index of the heading whose section holds `offset`: the last heading
@@ -101,32 +137,9 @@ public struct Outline: Sendable {
 
     /// GitHub's heading anchor: lowercased, punctuation removed except `-`
     /// and `_`, spaces to `-`.
-    public static func slug(_ title: String) -> String {
-        var out = ""
-        for scalar in title.lowercased().unicodeScalars {
-            let p = scalar.properties
-            if scalar == " " { out.append("-") } else if scalar == "-" || scalar == "_" || p.isAlphabetic
-                || p.generalCategory == .decimalNumber || p.generalCategory == .nonspacingMark
-                || p.generalCategory == .spacingMark || p.generalCategory == .enclosingMark {
-                out.unicodeScalars.append(scalar)
-            }
-        }
-        return out
-    }
+    public static func slug(_ title: String) -> String { Headings.slug(title) }
 
-    static func text(of inlines: [Inline]) -> String {
-        var s = ""
-        for inline in inlines {
-            switch inline.kind {
-            case .text(let t), .code(let t): s += t
-            case .math(let t, _): s += t
-            case .softBreak, .lineBreak: s += " "
-            case .html, .footnoteReference: break
-            case .image, .emphasis, .strong, .strikethrough, .link: s += text(of: inline.children)
-            }
-        }
-        return s
-    }
+    static func text(of inlines: [Inline]) -> String { Headings.text(of: inlines) }
 }
 
 // MARK: Section commands
@@ -138,7 +151,7 @@ extension MarkdownCommands {
     /// between the two positions; each moved chunk ends with one blank line.
     func moveSection(_ outline: Outline, _ k: Int, before target: Int?) -> EditPlan? {
         let items = outline.items
-        guard items.indices.contains(k) else { return nil }
+        guard items.indices.contains(k), !items[k].isNested, target.map({ !items[$0].isNested }) ?? true else { return nil }
         let moving = items[k].section
         let to = target.map { items[$0].section.lowerBound } ?? doc.count
         guard to < moving.lowerBound || to > moving.upperBound else { return nil }

@@ -262,6 +262,7 @@ extension CommandRegistry {
         editor("format.link", #selector(EditorView.insertLink(_:)))
         editor("format.image", #selector(EditorView.insertImage(_:)))
         editor("format.footnote", #selector(EditorView.insertFootnote(_:)))
+        editor("format.showFootnote", #selector(EditorView.showFootnote(_:)))
         group = 1; submenu = "Heading"
         for (level, action) in [#selector(EditorView.setHeading1(_:)), #selector(EditorView.setHeading2(_:)), #selector(EditorView.setHeading3(_:)),
                                 #selector(EditorView.setHeading4(_:)), #selector(EditorView.setHeading5(_:)), #selector(EditorView.setHeading6(_:))].enumerated() {
@@ -300,6 +301,15 @@ extension CommandRegistry {
         add("view.focusMode", "Focus Mode", #selector(EditorView.toggleFocusMode(_:)), "F8")
         add("view.typewriterMode", "Typewriter Mode", #selector(EditorView.toggleTypewriterMode(_:)), "F9")
         add("view.zenMode", "Zen Mode", #selector(DocumentWindowController.toggleZenMode(_:)), "Cmd-Ctrl-Shift-F")
+        // §6.12 settings until Settings → Editing has them.
+        add("view.focusSentence", "Focus on Sentence", #selector(DocumentWindowController.toggleFocusSentence(_:)), documentsOnly: true)
+        add("view.typewriterEase", "Ease Typewriter Scrolling", #selector(DocumentWindowController.toggleTypewriterEase(_:)), documentsOnly: true)
+        // §6.13: opt-in inline syntaxes, app-wide.
+        submenu = "Markdown Extensions"
+        add("view.syntax.subscript", "Subscript ~x~", #selector(DocumentWindowController.toggleSubscriptSyntax(_:)), documentsOnly: true)
+        add("view.syntax.superscript", "Superscript ^x^", #selector(DocumentWindowController.toggleSuperscriptSyntax(_:)), documentsOnly: true)
+        add("view.syntax.highlight", "Highlight ==x==", #selector(DocumentWindowController.toggleHighlightSyntax(_:)), documentsOnly: true)
+        submenu = nil
         group = 3
         add("view.zoomIn", "Zoom In", #selector(DocumentWindowController.zoomIn(_:)), "Cmd-=", "Cmd-+")
         add("view.zoomOut", "Zoom Out", #selector(DocumentWindowController.zoomOut(_:)), "Cmd--")

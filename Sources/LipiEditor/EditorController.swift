@@ -27,7 +27,7 @@ public final class EditorController {
     public private(set) var buffer: SourceBuffer
     private var parser: LipiParser
     public let policy: RevealPolicy
-    public private(set) var projection: Projection
+    public internal(set) var projection: Projection
     public private(set) var typesetter: Typesetter
     public private(set) var renderer: Renderer
     /// Block layout (ADR-002). Present in both modes: it owns the measure and
@@ -38,6 +38,9 @@ public final class EditorController {
     public private(set) var selection: SelectionModel
     public private(set) var marked: MarkedText?
     public private(set) var stats = Stats()
+    /// The parsed front matter (§6.13); nil when the document has none.
+    public internal(set) var frontMatter: FrontMatterData?
+    var frontMatterKey: (id: NodeID, revision: UInt32, length: Int)?
     /// Called after every pipeline run.
     public var onChange: ((EditorChange) -> Void)?
     /// Called when something outside the pipeline changed how the document
@@ -123,7 +126,7 @@ public final class EditorController {
     /// Replaces the whole document (open, revert). Clears the undo history.
     public func load(_ text: String) {
         buffer.reset(to: text)
-        parser = LipiParser(options: .editor)
+        parser = LipiParser(options: parserOptions)
         parser.parse(buffer.rope)
         selection = SelectionModel(caret: 0)
         marked = nil
@@ -132,13 +135,42 @@ public final class EditorController {
         _ = refresh(textChanged: true, started: DispatchTime.now())
     }
 
+    /// Parser extensions (§6.13): the opt-in `~sub~`/`^sup^` and
+    /// `==highlight==` syntaxes. Changing them re-parses and re-projects the
+    /// document; the text, selection and undo history are kept.
+    public var parserOptions: ParserOptions = .editor {
+        didSet {
+            guard parserOptions.extensions != oldValue.extensions || parserOptions.keepFootnotes != oldValue.keepFootnotes else { return }
+            parser = LipiParser(options: parserOptions)
+            parser.parse(buffer.rope)
+            projection = Projection(preset: projection.preset)
+            _ = refresh(textChanged: true, started: DispatchTime.now())
+            onRedisplay?()
+        }
+    }
+
+    /// Turns the opt-in inline syntaxes on or off.
+    public func setOptionalSyntax(subscript sub: Bool, superscript sup: Bool, highlight: Bool) {
+        var options = parserOptions
+        for (flag, on) in [(ParserOptions.Extensions.subscript, sub), (.superscript, sup), (.highlight, highlight)] {
+            if on { options.extensions.insert(flag) } else { options.extensions.remove(flag) }
+        }
+        parserOptions = options
+    }
+
     public func setViewportWidth(_ width: CGFloat) {
         layout.setViewportWidth(width)
         textKit?.setWidth(layout.measure)
     }
 
+    /// Increase Contrast (§6.20, §8.4): every theme set is drawn with its
+    /// high-contrast token set.
+    public var increaseContrast = false {
+        didSet { if increaseContrast != oldValue { setTheme(theme) } }
+    }
+
     public func setTheme(_ theme: Theme, zoom: CGFloat? = nil) {
-        rebuildTypesetter(theme: theme, zoom: zoom ?? self.zoom)
+        rebuildTypesetter(theme: increaseContrast ? theme.highContrast : theme.standard, zoom: zoom ?? self.zoom)
         _ = refresh(textChanged: false, started: DispatchTime.now())
     }
 
@@ -361,7 +393,7 @@ public final class EditorController {
     public var canRedo: Bool { isEditable && buffer.canRedo }
 
     /// Ends the open typing group (a caret jump, a command, undo).
-    private func closeTypingGroup() {
+    func closeTypingGroup() {
         guard typingKind != nil else { return }
         typingKind = nil
         buffer.endUndoGroup(selection: undoSelection)
@@ -393,9 +425,35 @@ public final class EditorController {
     /// Focus mode's scope (§6.12): the innermost selectable block around
     /// the caret (a paragraph, heading, list item, table or code block);
     /// nil between blocks.
-    public var focusScope: Range<Int>? {
+    public var focusScope: Range<Int>? { focusScope(.block) }
+
+    /// Focus mode's scope for a Settings choice: with `.sentence`, the
+    /// sentence around the caret (`NSString` sentence boundaries, trailing
+    /// spaces dropped) in a paragraph, heading or list item; other blocks
+    /// (code, tables) keep the block.
+    public func focusScope(_ kind: FocusScopeKind) -> Range<Int>? {
         let c = commands
-        return c.selectableBlocks(at: caret).first.map(c.blockRange)
+        guard let block = c.selectableBlocks(at: caret).first else { return nil }
+        let range = c.blockRange(block)
+        guard kind == .sentence else { return range }
+        switch block.kind {
+        case .paragraph, .heading, .listItem: break
+        default: return range
+        }
+        let text = string(in: range)
+        let utf8 = text.utf8
+        let at = caret - range.lowerBound
+        let bytes = Array(utf8)
+        var found: Range<Int>?
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: [.bySentences, .substringNotRequired]) { _, r, _, stop in
+            let lo = utf8.distance(from: utf8.startIndex, to: r.lowerBound)
+            var hi = utf8.distance(from: utf8.startIndex, to: r.upperBound)
+            while hi > lo, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[hi - 1]) { hi -= 1 }
+            if at >= lo { found = lo..<hi }
+            if at < utf8.distance(from: utf8.startIndex, to: r.upperBound) { stop = true }
+        }
+        guard let s = found, !s.isEmpty else { return range }
+        return (range.lowerBound + s.lowerBound)..<(range.lowerBound + s.upperBound)
     }
 
     var commands: MarkdownCommands {
@@ -652,6 +710,7 @@ public final class EditorController {
         }
         // Where the caret would land under the current (pre-reveal) layout.
         let expected = pinned.map(\.rect) ?? (textChanged ? nil : caretRect(forSource: selection.head))
+        if textChanged { updateFrontMatter() }
         let result = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
         let structure: Bool
         switch engine {

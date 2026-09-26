@@ -17,6 +17,9 @@ extern "C" {
 /** Parser option: leave footnote definitions where they were written and keep
  *  footnote references' labels instead of renumbering and relocating them. */
 #define LIPI_OPT_KEEP_FOOTNOTES (1 << 20)
+/** Parser option: `~x~` is subscript (Pandoc) and strikethrough needs `~~`.
+ *  Implemented by the strikethrough extension, which must be attached. */
+#define LIPI_OPT_SUBSCRIPT (1 << 21)
 
 /** Node flag: the link is an autolink (`<…>` or a bare GFM URL/e-mail). */
 #define LIPI_FLAG_AUTOLINK (1 << 0)
@@ -84,6 +87,9 @@ void lipi_parser_add_reference(cmark_parser *parser, const char *label,
 /* Extension node types (valid after cmark_gfm_core_extensions_ensure_registered). */
 extern cmark_node_type CMARK_NODE_STRIKETHROUGH;
 extern cmark_node_type CMARK_NODE_MATH;
+extern cmark_node_type CMARK_NODE_SUBSCRIPT;
+extern cmark_node_type CMARK_NODE_SUPERSCRIPT;
+extern cmark_node_type CMARK_NODE_HIGHLIGHT;
 
 /* Math node contents. Returns 0 if `node` is not a math node. */
 int lipi_math_get(cmark_node *node, const char **text, int *len, int *display);
@@ -109,6 +115,9 @@ const char *lipi_node_get_label(cmark_node *node, int *len);
 #define LIPI_EXT_TABLE_CELL 3
 #define LIPI_EXT_STRIKETHROUGH 4
 #define LIPI_EXT_MATH 5
+#define LIPI_EXT_SUBSCRIPT 6
+#define LIPI_EXT_SUPERSCRIPT 7
+#define LIPI_EXT_HIGHLIGHT 8
 int lipi_node_get_ext_type(cmark_node *node);
 
 /* Decode one HTML entity (`&amp;`, `&#38;`, `&#x26;`) at `src`, which must

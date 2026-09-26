@@ -203,3 +203,40 @@ delimiters elsewhere. `extensions/core-extensions.c` registers it as
   unchanged.
 - `Package.swift` adds `src` and `extensions` as header search paths; the
   extensions include core headers with angle brackets, as upstream does.
+
+## 7. Subscript, superscript and highlight (new, opt-in)
+
+PRD §6.13. All three are off unless the Swift side asks for them, so the
+GFM and CommonMark spec suites see an unchanged parser.
+
+- `extensions/lipi_inline.c`, `extensions/lipi_inline.h` (new):
+  - `^sup^` (`create_superscript_extension`, registered as
+    `"superscript"`, node `CMARK_NODE_SUPERSCRIPT`) and `==highlight==`
+    (`create_highlight_extension`, `"highlight"`,
+    `CMARK_NODE_HIGHLIGHT`).
+  - Sub/superscripts follow Pandoc: the opener is followed by a
+    non-space, the content has no unescaped whitespace, and the closer is
+    a single delimiter preceded by a non-space. A run of two or more `^`
+    is literal. A `^` directly after `[` is left to the footnote
+    reference scanner (`[^1]`).
+  - Highlight uses `scan_delimiters` flanking like strikethrough and
+    requires exactly two `=`.
+  - Delimiter text nodes are chunk views into the input
+    (`cmark_chunk_dup`) and carry `lipi_start`/`lipi_end` like other
+    inlines (§1).
+  - `lipi_insert_span` wraps the nodes between two delimiters of equal
+    length in a new node; subscript uses it too.
+  - HTML renders `<sub>`, `<sup>`, `<mark>`; CommonMark renders the
+    original delimiters.
+- `extensions/strikethrough.c`: `~sub~` lives here, not in its own
+  extension, because special characters are dispatched to the first
+  extension that registered them and `~` belongs to strikethrough. With
+  `LIPI_OPT_SUBSCRIPT` (`1 << 21`, `include/lipi_cmark.h`) set, a single
+  `~` uses the Pandoc subscript rules and closes into
+  `CMARK_NODE_SUBSCRIPT`; `~~` is strikethrough as before. Without the
+  option the file behaves as upstream (single-tilde strikethrough).
+- `include/lipi_cmark.h`: `LIPI_OPT_SUBSCRIPT`, the three node types, and
+  `LIPI_EXT_SUBSCRIPT` 6, `LIPI_EXT_SUPERSCRIPT` 7,
+  `LIPI_EXT_HIGHLIGHT` 8 for `lipi_node_get_ext_type` (`src/lipi.c`).
+- `extensions/core-extensions.c` registers `"superscript"` and
+  `"highlight"`.

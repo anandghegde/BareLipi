@@ -23,16 +23,103 @@ public struct ProjectedEntry: Sendable {
     /// inline or escape); only kept for a table entry with a non-trivial
     /// reveal key.
     var revealedRows: [Int] = []
+    /// The entry's footnote labels and the numbers it was built with; nil
+    /// when it has none.
+    var notes: EntryNotes? = nil
+    var footnoteKey: Int { notes?.key ?? 0 }
+    /// `TableOfContents.displayKey` for a `[toc]` entry, else 0.
+    var tocKey: Int = 0
+}
+
+/// The footnote references and definitions of one entry (normalized labels,
+/// in order), the hash of their numbers and whether a definition starts a
+/// footnotes region.
+final class EntryNotes: Sendable {
+    let refs: [String]
+    let defs: [String]
+    let key: Int
+    let regionStart: Bool
+
+    init(refs: [String], defs: [String], key: Int, regionStart: Bool) {
+        self.refs = refs
+        self.defs = defs
+        self.key = key
+        self.regionStart = regionStart
+    }
+}
+
+/// Footnote numbers in document order (§6.13): a label's number is the
+/// position of its first reference among the references that have a
+/// definition anywhere in the document.
+public struct FootnoteNumbering: Sendable, Equatable {
+    /// Normalized label → number (1-based).
+    public private(set) var numbers: [String: Int] = [:]
+    /// Normalized labels with a definition.
+    public private(set) var defined: Set<String> = []
+
+    public init() {}
+
+    init(refs: [[String]], defs: [[String]]) {
+        for d in defs { defined.formUnion(d) }
+        for list in refs {
+            for label in list where numbers[label] == nil && defined.contains(label) {
+                numbers[label] = numbers.count + 1
+            }
+        }
+    }
+
+    public var isEmpty: Bool { numbers.isEmpty && defined.isEmpty }
+
+    /// The number of `label` (as written), nil when nothing references it
+    /// or it has no definition.
+    public func number(for label: String) -> Int? { numbers[Self.normalize(label)] }
+
+    /// cmark's label matching: case-insensitive, runs of whitespace collapsed.
+    public static func normalize(_ label: String) -> String {
+        var simple = true
+        for b in label.utf8 where b >= 0x80 || b <= 0x20 || (b >= 0x41 && b <= 0x5A) { simple = false; break }
+        if simple { return label }
+        return label.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    }
+
+    /// Normalized labels of the footnote references and definitions in `block`.
+    public static func labels(in block: Block) -> (refs: [String], defs: [String]) {
+        var refs: [String] = [], defs: [String] = []
+        block.forEachBlock { b in
+            if case .footnoteDefinition(let label) = b.kind { defs.append(normalize(label)) }
+            for inline in b.inlines {
+                inline.forEachInline { i in
+                    if case .footnoteReference(let label) = i.kind { refs.append(normalize(label)) }
+                }
+            }
+        }
+        return (refs, defs)
+    }
 }
 
 public struct Projection: Sendable {
     public var preset: RevealPreset
     /// Source mode (§6.2): entries are shown byte for byte (`SourceProjection.swift`).
     public var sourceMode = false
+    /// Set when the front matter does not parse (`FrontMatterData.error`):
+    /// the block is shown as source with this warning (§6.13).
+    public var frontMatterWarning: String? = nil
+    /// The headings a `[toc]` block shows (§6.13); nil when the document has
+    /// no `[toc]` (so nothing is computed).
+    public private(set) var tableOfContents: TableOfContents? = nil
     public private(set) var entries: [ProjectedEntry] = []
     public private(set) var reveal = RevealSet()
     /// Bytes covered; equals the document length after `update`.
     public private(set) var length = 0
+    /// Footnote numbers as of the last `update`.
+    public private(set) var footnotes = FootnoteNumbering()
+    /// The notes of the entries with footnote labels as of the last
+    /// `update`, in order.
+    private var footnoteSequence: [EntryNotes] = []
+    /// The kept entries' `notes` are up to date (false after source mode).
+    private var notesComputed = false
+    /// The notes by entry position as of the last `update` (empty when none).
+    private var notesByEntry: [EntryNotes?] = []
 
     public struct UpdateResult: Sendable, Equatable {
         public var rebuilt = 0
@@ -60,32 +147,126 @@ public struct Projection: Sendable {
     /// `reveal`.
     @discardableResult
     public mutating func update(index: BlockIndex, rope: LipiRope, reveal: RevealSet) -> UpdateResult {
-        var old: [NodeID: ProjectedEntry] = [:]
+        // Previous entries by identity (positions in `entries`, so lookups
+        // do not copy them).
+        var old: [NodeID: Int] = [:]
         old.reserveCapacity(entries.count)
-        for e in entries { old[e.id] = e }
+        for j in entries.indices { old[entries[j].id] = j }
+
+        // Footnotes: labels per entry (kept from the previous projection
+        // when the entry did not change), then the document's numbering.
+        // The numbering is recomputed only when some entry's labels, the
+        // sequence of entries with labels, or a region start changed.
+        var notes: [EntryNotes?] = []
+        var numbering = footnotes
+        // Typing: the same entries with one or a few edited in place and
+        // their labels unchanged keep every note and number, without the
+        // walk over all entries with labels below.
+        let kept = !sourceMode && notesComputed && entries.count == index.count ? keptNotes(index) : nil
+        if let kept {
+            notes = kept.notes
+        } else if !sourceMode {
+            // Entries with labels in order; `fresh` notes still need a key.
+            var found: [(i: Int, notes: EntryNotes, fresh: Bool)] = []
+            var changed = false
+            for i in index.entries.indices {
+                guard index.entries[i].hasBracket else { continue }
+                let j = old[index.entries[i].block.id]
+                let unchanged = !index.entries[i].isDirty && j.map { entries[$0].revision == index.entries[i].revision } == true
+                let prior = j.flatMap { entries[$0].notes }
+                let region = Self.isRegionStart(i, in: index)
+                let n: EntryNotes, fresh: Bool
+                if unchanged, let prior, prior.regionStart == region {
+                    n = prior; fresh = false
+                } else if unchanged, prior == nil, notesComputed, !region {
+                    continue // it had no labels when it was built
+                } else {
+                    let labels: (refs: [String], defs: [String])
+                    if unchanged, let prior { labels = (prior.refs, prior.defs) } // only the region changed
+                    else { labels = FootnoteNumbering.labels(in: index.entries[i].block) }
+                    guard !labels.refs.isEmpty || !labels.defs.isEmpty else { continue }
+                    n = EntryNotes(refs: labels.refs, defs: labels.defs, key: 0, regionStart: region); fresh = true
+                }
+                // The numbering depends only on the labels in order (an
+                // edited entry may come back with a new identity).
+                let k = found.count
+                if !changed {
+                    if k >= footnoteSequence.count { changed = true } else {
+                        let p = footnoteSequence[k]
+                        if p !== n, p.refs != n.refs || p.defs != n.defs || p.regionStart != n.regionStart { changed = true }
+                    }
+                }
+                found.append((i, n, fresh))
+            }
+            if found.count != footnoteSequence.count { changed = true }
+            if found.isEmpty {
+                numbering = FootnoteNumbering()
+                footnoteSequence = []
+            } else {
+                notes = Array(repeating: nil, count: index.count)
+                if changed { numbering = FootnoteNumbering(refs: found.map(\.notes.refs), defs: found.map(\.notes.defs)) }
+                var sequence: [EntryNotes] = []
+                sequence.reserveCapacity(found.count)
+                for f in found {
+                    if !changed, !f.fresh {
+                        notes[f.i] = f.notes
+                        sequence.append(f.notes)
+                        continue
+                    }
+                    let n = f.notes
+                    var h = Hasher()
+                    // Labels too, so an equal key after a table row edit means
+                    // the other rows' references keep their numbers.
+                    for r in n.refs { h.combine(r); h.combine(numbering.numbers[r] ?? 0) }
+                    h.combine(-1)
+                    for d in n.defs { h.combine(d); h.combine(numbering.numbers[d] ?? 0) }
+                    h.combine(n.regionStart)
+                    let keyed = EntryNotes(refs: n.refs, defs: n.defs, key: h.finalize() | 1, regionStart: n.regionStart)
+                    notes[f.i] = keyed
+                    sequence.append(keyed)
+                }
+                footnoteSequence = sequence
+            }
+            notesComputed = true
+        } else {
+            notesComputed = false
+            footnoteSequence = []
+            numbering = FootnoteNumbering()
+        }
+
+        let tocPossible = kept.map { tableOfContents != nil || $0.toc } ?? true
+        let toc: TableOfContents? = !sourceMode && tocPossible && TableOfContents.isNeeded(in: index) ? TableOfContents(index: index) : nil
 
         var result = UpdateResult()
         var new: [ProjectedEntry] = []
         new.reserveCapacity(index.count)
         // Entries to build, as (slot in `new`, index entry); built after the
         // walk, concurrently when there are many (Replace All).
-        var pending: [(slot: Int, entry: Int)] = []
+        var pending: [PendingBuild] = []
         for i in index.entries.indices {
             let entry = index.entries[i]
             let start = index.start(of: i)
-            let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1) : revealKey(for: entry.block.id, reveal: reveal)
-            if !entry.isDirty, var kept = old[entry.block.id], kept.length == entry.length, kept.revealKey == key,
-               kept.revision == entry.revision {
+            let malformed = i == 0 && !sourceMode && frontMatterWarning != nil && entry.block.kind.isFrontMatter
+            let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1)
+                : malformed ? Self.warningKey(frontMatterWarning!) : revealKey(for: entry.block.id, reveal: reveal)
+            let note = notes.isEmpty ? nil : notes[i]
+            let noteKey = note?.key ?? 0
+            let tocKey = toc != nil && entry.hasBracket && entry.block.isTableOfContents ? toc!.displayKey : 0
+            if !entry.isDirty, let j = old[entry.block.id], entries[j].length == entry.length, entries[j].revealKey == key,
+               entries[j].revision == entry.revision, entries[j].footnoteKey == noteKey, entries[j].tocKey == tocKey {
+                var kept = entries[j]
                 kept.start = start
                 new.append(kept)
                 result.reused += 1
                 continue
             }
-            if !sourceMode, !entry.isDirty, let edit = entry.tableRowEdit, let prior = old[entry.block.id],
+            if !sourceMode, !entry.isDirty, let edit = entry.tableRowEdit, let j = old[entry.block.id], case let prior = entries[j],
                prior.revision == edit.baseRevision, prior.length + edit.lengthDelta == entry.length,
+               prior.footnoteKey == noteKey,
                var patched = patchTableRows(entry: entry, prior: prior, edit: edit, start: start, key: key,
-                                            rope: rope, reveal: reveal) {
+                                            rope: rope, reveal: reveal, footnotes: numbering) {
                 patched.start = start
+                patched.notes = note
                 new.append(patched)
                 result.changedEntries.append(new.count - 1)
                 result.rebuilt += 1
@@ -97,12 +278,12 @@ public struct Projection: Sendable {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
             }
             new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: [],
-                                      revision: entry.revision, revealedRows: rows))
-            pending.append((new.count - 1, i))
+                                      revision: entry.revision, revealedRows: rows, notes: note, tocKey: tocKey))
+            pending.append((new.count - 1, i, malformed, note?.regionStart ?? false, tocKey != 0))
             result.changedEntries.append(new.count - 1)
             result.rebuilt += 1
         }
-        buildPending(pending, into: &new, index: index, rope: rope, reveal: reveal)
+        buildPending(pending, into: &new, index: index, rope: rope, reveal: reveal, footnotes: numbering, toc: toc)
         if new.isEmpty {
             // An empty document still has one place to put the caret.
             if let kept = entries.first, entries.count == 1, kept.length == 0, kept.id == NodeID(rawValue: 0) {
@@ -120,6 +301,9 @@ public struct Projection: Sendable {
         }
         entries = new
         length = index.length
+        footnotes = numbering
+        notesByEntry = notes
+        tableOfContents = toc
         self.reveal = reveal
         return result
     }
@@ -131,20 +315,25 @@ public struct Projection: Sendable {
     /// Builds the display blocks of the `pending` entries into their slots.
     /// Building an entry reads only the entry, its bytes and the preset, so
     /// many of them build in parallel.
-    private func buildPending(_ pending: [(slot: Int, entry: Int)], into new: inout [ProjectedEntry],
-                              index: BlockIndex, rope: LipiRope, reveal: RevealSet) {
+    private func buildPending(_ pending: [PendingBuild], into new: inout [ProjectedEntry],
+                              index: BlockIndex, rope: LipiRope, reveal: RevealSet,
+                              footnotes: FootnoteNumbering, toc: TableOfContents?) {
         let last = index.count - 1
-        func blocks(_ i: Int) -> [DisplayBlock] {
+        let warning = frontMatterWarning
+        let me = self
+        @Sendable func blocks(_ p: PendingBuild) -> [DisplayBlock] {
+            let i = p.entry
             let entry = index.entries[i]
             let start = index.start(of: i)
-            return sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == last)
-                : build(entry: entry, start: start, rope: rope, reveal: reveal)
+            return me.sourceMode ? me.buildSource(entry: entry, start: start, rope: rope, isLast: i == last)
+                : me.build(entry: entry, start: start, rope: rope, reveal: p.malformed ? .everything : reveal,
+                           footnotes: footnotes, regionStart: p.regionStart, warning: p.malformed ? warning : nil,
+                           toc: p.toc ? toc : nil)
         }
         guard pending.count >= concurrentBuildThreshold else {
-            for p in pending { new[p.slot].blocks = blocks(p.entry) }
+            for p in pending { new[p.slot].blocks = blocks(p) }
             return
         }
-        let me = self
         var built = [[DisplayBlock]](repeating: [], count: pending.count)
         built.withUnsafeMutableBufferPointer { buffer in
             nonisolated(unsafe) let out = buffer
@@ -152,16 +341,23 @@ public struct Projection: Sendable {
             let chunk = 32
             DispatchQueue.concurrentPerform(iterations: (pending.count + chunk - 1) / chunk) { c in
                 for k in (c * chunk)..<min(pending.count, (c + 1) * chunk) {
-                    let i = pending[k].entry
-                    let entry = index.entries[i]
-                    let start = index.start(of: i)
-                    out[k] = me.sourceMode
-                        ? me.buildSource(entry: entry, start: start, rope: rope, isLast: i == last)
-                        : me.build(entry: entry, start: start, rope: rope, reveal: reveal)
+                    out[k] = blocks(pending[k])
                 }
             }
         }
         for (k, p) in pending.enumerated() { new[p.slot].blocks = built[k] }
+    }
+
+    /// An entry to build after the walk: its slot, its index entry, and
+    /// what its build needs from the walk.
+    private typealias PendingBuild = (slot: Int, entry: Int, malformed: Bool, regionStart: Bool, toc: Bool)
+
+    /// The reveal key of malformed front matter (always revealed; rebuilt
+    /// when the warning changes).
+    private static func warningKey(_ warning: String) -> Int {
+        var h = Hasher()
+        h.combine(warning)
+        return h.finalize() | 2
     }
 
     /// A reveal key that stands for a caret's reveal set (not "nothing" or "everything").
@@ -175,10 +371,50 @@ public struct Projection: Sendable {
         return h.finalize() | 2
     }
 
-    private func build(entry: BlockEntry, start: Int, rope: LipiRope, reveal: RevealSet) -> [DisplayBlock] {
+    /// The notes of the last update, when at most a few entries changed
+    /// in place (same count, same identities elsewhere) and their labels
+    /// and region starts, and their successors' region starts, did not;
+    /// with whether a changed entry is a `[toc]`. Nil otherwise.
+    private func keptNotes(_ index: BlockIndex) -> (notes: [EntryNotes?], toc: Bool)? {
+        guard notesByEntry.isEmpty || notesByEntry.count == index.count else { return nil }
+        let current = index.entries
+        var changed: [Int] = []
+        for i in current.indices
+        where current[i].isDirty || current[i].block.id != entries[i].id || current[i].revision != entries[i].revision {
+            changed.append(i)
+            if changed.count > 4 { return nil }
+        }
+        func prior(_ i: Int) -> EntryNotes? { notesByEntry.isEmpty ? nil : notesByEntry[i] }
+        var toc = false
+        for i in changed {
+            let e = current[i]
+            if e.hasBracket, e.block.isTableOfContents { toc = true }
+            let labels = e.hasBracket ? FootnoteNumbering.labels(in: e.block) : (refs: [], defs: [])
+            guard labels.refs == (prior(i)?.refs ?? []), labels.defs == (prior(i)?.defs ?? []),
+                  Self.isRegionStart(i, in: index) == (prior(i)?.regionStart ?? false) else { return nil }
+            if i + 1 < current.count, Self.isRegionStart(i + 1, in: index) != (prior(i + 1)?.regionStart ?? false) { return nil }
+        }
+        return (notesByEntry, toc)
+    }
+
+    /// A top-level footnote definition that does not follow another one.
+    private static func isRegionStart(_ i: Int, in index: BlockIndex) -> Bool {
+        guard case .footnoteDefinition = index.entries[i].block.kind else { return false }
+        if i == 0 { return true }
+        if case .footnoteDefinition = index.entries[i - 1].block.kind { return false }
+        return true
+    }
+
+    private func build(entry: BlockEntry, start: Int, rope: LipiRope, reveal: RevealSet,
+                       footnotes: FootnoteNumbering = FootnoteNumbering(), regionStart: Bool = false,
+                       warning: String? = nil, toc: TableOfContents? = nil) -> [DisplayBlock] {
         var text = rope.string(in: start..<(start + entry.length))
         return text.withUTF8 { bytes in
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
+            projector.footnotes = footnotes
+            projector.footnoteRegionStart = regionStart
+            projector.warning = warning
+            projector.toc = toc
             return projector.project(entry.block, spanLength: entry.length)
         }
     }
@@ -190,7 +426,7 @@ public struct Projection: Sendable {
     /// every other cell is reused. Nil when the patch does not apply (the
     /// caller rebuilds the entry).
     private func patchTableRows(entry: BlockEntry, prior: ProjectedEntry, edit: TableRowEdit, start: Int, key: Int,
-                                rope: LipiRope, reveal: RevealSet) -> ProjectedEntry? {
+                                rope: LipiRope, reveal: RevealSet, footnotes: FootnoteNumbering) -> ProjectedEntry? {
         guard prior.blocks.count == 1, prior.blocks[0].table != nil, case .table = entry.block.kind,
               !Self.isCaretKey(key) || reveal.blocks.isEmpty else { return nil }
         if key != prior.revealKey && (key == 1 || prior.revealKey == 1) { return nil }
@@ -207,6 +443,7 @@ public struct Projection: Sendable {
         var text = rope.string(in: start..<(start + entry.length))
         let block: DisplayBlock? = text.withUTF8 { bytes in
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
+            projector.footnotes = footnotes
             return projector.patchTable(entry.block, old: prior.blocks[0], rows: rows.sorted(), editedRow: edit.row,
                                         lengthDelta: edit.lengthDelta, spanLength: entry.length)
         }
@@ -313,6 +550,14 @@ struct EntryProjector {
     var blocks: [DisplayBlock] = []
     /// Next local source byte not yet owned by a display block.
     var cursor = 0
+    /// Document footnote numbers: references show their number.
+    var footnotes = FootnoteNumbering()
+    /// The entry is a top-level definition starting a footnotes region.
+    var footnoteRegionStart = false
+    /// Shown beside the entry's front matter block (it did not parse).
+    var warning: String? = nil
+    /// Set for a `[toc]` entry: the headings it shows.
+    var toc: TableOfContents? = nil
 
     init(bytes: UnsafeBufferPointer<UInt8>, entryStart: Int, preset: RevealPreset, reveal: RevealSet) {
         self.bytes = bytes
@@ -394,7 +639,12 @@ struct EntryProjector {
             }
         case .listItem, .footnoteDefinition:
             var inner = context
-            if case .footnoteDefinition(let label) = block.kind { inner.footnoteLabel = label }
+            if case .footnoteDefinition(let label) = block.kind {
+                inner.footnoteLabel = label
+                inner.footnoteNumber = footnotes.number(for: label)
+                inner.footnoteRegionStart = footnoteRegionStart
+                footnoteRegionStart = false
+            }
             let revealed = containerRevealed || isRevealed(block.id)
             if block.children.isEmpty {
                 emitEmptyLeaf(block, context: inner, revealed: revealed, firstLeafContainer: block)
@@ -407,6 +657,8 @@ struct EntryProjector {
                 first = nil
                 inner.marker = nil
                 inner.footnoteLabel = nil
+                inner.footnoteNumber = nil
+                inner.footnoteRegionStart = false
             }
         case .table(let alignments):
             emitTable(block, alignments: alignments, context: context, revealed: containerRevealed)
@@ -464,6 +716,7 @@ struct EntryProjector {
     }
 
     private mutating func emitLeaf(_ block: Block, context: BlockContext, revealed: Bool, firstLeafContainer: Block?) {
+        var context = context
         let r = block.range
         var builder = CellBuilder(bytes: bytes, start: cursor)
         var role: BlockRole = .paragraph
@@ -473,7 +726,19 @@ struct EntryProjector {
         switch block.kind {
         case .paragraph:
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
-            emitInlines(block.inlines, &builder, style: [])
+            if let toc, !revealed, context.listDepth == 0, context.quoteDepth == 0, block.isTableOfContents {
+                // The live table of contents stands in for `[toc]`; the
+                // caret in the block reveals the placeholder.
+                context.isTableOfContents = true
+                let lines = toc.displayLines()
+                if lines.isEmpty {
+                    builder.replace(r, withBytes: Array("Table of Contents".utf8), style: .syntax)
+                } else {
+                    builder.replace(r, withBytes: Array(lines.joined(separator: "\n").utf8), style: .link)
+                }
+            } else {
+                emitInlines(block.inlines, &builder, style: [])
+            }
             builder.hide(builder.cursor..<end, .before)
         case .heading(let level, let isSetext):
             role = .heading(level: level)
@@ -523,6 +788,7 @@ struct EntryProjector {
             if revealed { builder.copy(r, .syntax) } else { builder.hide(r, .before) }
         case .frontMatter(let kind):
             role = .frontMatter
+            context.warning = warning
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
             emitFrontMatter(r, kind: kind, &builder, revealed: revealed)
         case .linkReferenceDefinition:
@@ -716,7 +982,21 @@ struct EntryProjector {
             emitContainer(inline, &builder, style: style.union(.strong))
         case .strikethrough:
             emitContainer(inline, &builder, style: style.union(.strikethrough))
-        case .footnoteReference:
+        case .subscript:
+            emitContainer(inline, &builder, style: style.union(.subscript))
+        case .superscript:
+            emitContainer(inline, &builder, style: style.union(.superscript))
+        case .highlight:
+            emitContainer(inline, &builder, style: style.union(.highlight))
+        case .emoji(let emoji):
+            if isInlineRevealed(inline.id) {
+                builder.copy(r, style)
+            } else {
+                builder.replace(r, withBytes: Array(emoji.utf8), style: style)
+            }
+        case .attributes:
+            emitSyntax(r, &builder, revealed: isInlineRevealed(inline.id), style: style, resolve: .before)
+        case .footnoteReference(let label):
             let revealed = isInlineRevealed(inline.id)
             // `[^label]`
             let labelStart = min(r.lowerBound + 2, r.upperBound)
@@ -727,7 +1007,12 @@ struct EntryProjector {
                 builder.copy(labelEnd..<r.upperBound, style.union(.syntax))
             } else {
                 builder.hide(r.lowerBound..<labelStart, .after)
-                builder.copy(labelStart..<labelEnd, style.union(.footnoteReference))
+                if let n = footnotes.number(for: label), labelStart < labelEnd {
+                    // The number assigned in document order stands in for the label.
+                    builder.replace(labelStart..<labelEnd, withBytes: Array(String(n).utf8), style: style.union(.footnoteReference))
+                } else {
+                    builder.copy(labelStart..<labelEnd, style.union(.footnoteReference))
+                }
                 builder.hide(labelEnd..<r.upperBound, .after)
             }
         case .link(_, _, let isAutolink):

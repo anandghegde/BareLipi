@@ -13,6 +13,8 @@ public enum DecorationKind: Sendable, Hashable {
     case chip
     case link
     case marked
+    /// `==highlight==` (§6.13): a marker-pen background.
+    case highlight
 }
 
 public struct Decoration: Sendable, Hashable {
@@ -246,7 +248,9 @@ public struct Typesetter {
                 decorations.append(Decoration(range: run.range, kind: .strikethrough))
                 result.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
             }
-            if s.contains(.footnoteReference) { result.addAttribute(.superscript, value: 1, range: range) }
+            if s.contains(.footnoteReference) || s.contains(.superscript) { result.addAttribute(.superscript, value: 1, range: range) }
+            if s.contains(.subscript) { result.addAttribute(.superscript, value: -1, range: range) }
+            if s.contains(.highlight) { decorations.append(Decoration(range: run.range, kind: .highlight)) }
             if s.contains(.chip) {
                 decorations.append(Decoration(range: run.range, kind: .chip))
                 setColor(colors.muted, on: result, range: range)
@@ -308,7 +312,7 @@ public struct Typesetter {
             size = (style.size * 0.9 * 2).rounded() / 2
         }
         if inline.contains(.strong) { weight = weight == .regular ? .semibold : .bold }
-        if inline.contains(.footnoteReference) || inline.contains(.chip) { size = (style.size * 0.75).rounded() }
+        if inline.contains(.footnoteReference) || inline.contains(.chip) || inline.contains(.subscript) || inline.contains(.superscript) { size = (style.size * 0.75).rounded() }
         return cascade.font(family: family, script: script, weight: weight, italic: italic, size: size)
     }
 

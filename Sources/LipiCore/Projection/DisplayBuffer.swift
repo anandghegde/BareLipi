@@ -26,6 +26,10 @@ public struct InlineStyle: OptionSet, Sendable, Hashable {
     public static let chip = InlineStyle(rawValue: 1 << 10)
     /// A `↵` shown for a revealed hard break.
     public static let lineBreak = InlineStyle(rawValue: 1 << 11)
+    /// `~x~`, `^x^` and `==x==` (opt-in syntax).
+    public static let `subscript` = InlineStyle(rawValue: 1 << 12)
+    public static let superscript = InlineStyle(rawValue: 1 << 13)
+    public static let highlight = InlineStyle(rawValue: 1 << 14)
 }
 
 /// A maximal run of display text (UTF-16 range) with one style.
@@ -113,8 +117,19 @@ public struct BlockContext: Sendable, Hashable {
     public var marker: ListMarker? = nil
     /// Set on the first leaf of a footnote definition.
     public var footnoteLabel: String? = nil
+    /// The definition's number in document order of first reference (§6.13);
+    /// nil for a definition no reference uses.
+    public var footnoteNumber: Int? = nil
+    /// The first definition of a run of top-level definitions: the start of
+    /// a footnotes region, drawn with a rule above it.
+    public var footnoteRegionStart = false
     /// Any container this block sits in is loose (paragraph spacing applies).
     public var isLoose: Bool = false
+    /// A problem shown beside the block (malformed front matter, §6.13).
+    public var warning: String? = nil
+    /// A `[toc]` placeholder showing the document's headings, one per line
+    /// (`Projection.tableOfContents`).
+    public var isTableOfContents = false
     public init() {}
 }
 
@@ -286,6 +301,7 @@ struct FNV1a {
             combine(m.task == nil ? 0 : m.task == .checked ? 2 : 1)
         } else { combine(-1) }
         if let f = c.footnoteLabel { combine(f) } else { combine(-1) }
+        combine(c.footnoteNumber ?? -1); combine(c.footnoteRegionStart ? 1 : 0)
     }
     mutating func combine(_ a: ColumnAlignment) {
         switch a {

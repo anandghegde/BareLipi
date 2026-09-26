@@ -4,8 +4,8 @@ import Dispatch
 /// Which cmark-gfm syntax extensions and options a parse uses.
 public struct ParserOptions: Sendable, Hashable {
     public struct Extensions: OptionSet, Sendable, Hashable {
-        public let rawValue: UInt8
-        public init(rawValue: UInt8) { self.rawValue = rawValue }
+        public let rawValue: UInt16
+        public init(rawValue: UInt16) { self.rawValue = rawValue }
 
         public static let table = Extensions(rawValue: 1 << 0)
         public static let strikethrough = Extensions(rawValue: 1 << 1)
@@ -15,6 +15,16 @@ public struct ParserOptions: Sendable, Hashable {
         public static let footnotes = Extensions(rawValue: 1 << 5)
         /// `$…$` / `$$…$$` TeX math (BareLipi addition, Pandoc rules).
         public static let math = Extensions(rawValue: 1 << 6)
+        /// `~x~` subscript, Pandoc rules (opt-in). Strikethrough then needs `~~`.
+        public static let `subscript` = Extensions(rawValue: 1 << 7)
+        /// `^x^` superscript, Pandoc rules (opt-in).
+        public static let superscript = Extensions(rawValue: 1 << 8)
+        /// `==x==` highlight (opt-in).
+        public static let highlight = Extensions(rawValue: 1 << 9)
+        /// `:alias:` emoji shortcodes as `.emoji` inlines (AST only; HTML keeps the text).
+        public static let emojiShortcodes = Extensions(rawValue: 1 << 10)
+        /// Pandoc `{#id .class}` after a heading's text as an `.attributes` inline (AST only).
+        public static let headingAttributes = Extensions(rawValue: 1 << 11)
 
         /// The five extensions GitHub enables.
         public static let gfm: Extensions = [.table, .strikethrough, .autolink, .tagfilter, .tasklist]
@@ -22,12 +32,14 @@ public struct ParserOptions: Sendable, Hashable {
         var names: [String] {
             var out: [String] = []
             if contains(.table) { out.append("table") }
-            if contains(.strikethrough) { out.append("strikethrough") }
+            if contains(.strikethrough) || contains(.subscript) { out.append("strikethrough") }
             if contains(.autolink) { out.append("autolink") }
             if contains(.tagfilter) { out.append("tagfilter") }
             if contains(.tasklist) { out.append("tasklist") }
             if contains(.footnotes) { out.append("footnotes") }
             if contains(.math) { out.append("math") }
+            if contains(.superscript) { out.append("superscript") }
+            if contains(.highlight) { out.append("highlight") }
             return out
         }
     }
@@ -43,7 +55,8 @@ public struct ParserOptions: Sendable, Hashable {
     }
 
     /// What BareLipi edits with: GFM, footnotes and math, positions preserved.
-    public static let editor = ParserOptions(extensions: [.gfm, .footnotes, .math], keepFootnotes: true)
+    public static let editor = ParserOptions(extensions: [.gfm, .footnotes, .math, .emojiShortcodes, .headingAttributes],
+                                             keepFootnotes: true)
     /// GitHub's rendering behaviour.
     public static let gfm = ParserOptions(extensions: .gfm)
     /// Plain CommonMark.
@@ -55,6 +68,7 @@ public struct ParserOptions: Sendable, Hashable {
         var options = CMarkOption.unsafe
         if extensions.contains(.footnotes) { options |= CMarkOption.footnotes }
         if keepFootnotes { options |= Int32(LIPI_OPT_KEEP_FOOTNOTES) }
+        if extensions.contains(.subscript) { options |= Int32(LIPI_OPT_SUBSCRIPT) }
         return options
     }
 }

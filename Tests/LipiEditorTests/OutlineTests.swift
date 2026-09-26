@@ -83,4 +83,43 @@ struct OutlineTests {
         let c = EditorController(text: text)
         #expect(!c.shiftSection(c.makeOutline(), 0, by: -1))
     }
+
+    @Test func nestedHeadingsInListsAndQuotes() {
+        let text = "# Top\n\n- item\n\n  ## In list\n\n  more\n\n> ### Quoted\n\n| a |\n|---|\n| # no |\n\n# Next\n"
+        let o = outline(text)
+        #expect(o.items.map(\.title) == ["Top", "In list", "Quoted", "Next"])
+        #expect(o.items.map(\.isNested) == [false, true, true, false])
+        #expect(o.items.map(\.level) == [1, 2, 3, 1])
+        let next = text.utf8.count - "# Next\n".utf8.count
+        // The top-level section runs over the nested headings to the next top-level one.
+        #expect(o.items[0].section == 0..<next)
+        // A nested section ends with its container block.
+        let quote = Array(text.utf8).firstIndex(of: UInt8(ascii: ">"))!
+        #expect(o.items[1].section.upperBound <= quote)
+        #expect(o.items[1].section.lowerBound == o.items[1].range.lowerBound)
+        #expect(o.current(at: o.items[2].range.lowerBound) == 2)
+    }
+
+    @Test func nestedHeadingsAreNotMoved() {
+        let c = EditorController(text: "# A\n\n- x\n\n  ## N\n\n# B\n")
+        let o = c.makeOutline()
+        #expect(o.items.count == 3)
+        #expect(!c.moveSection(o, 1, before: 0))
+        #expect(!c.moveSection(o, 0, before: 1))
+        #expect(!c.canUndo)
+        // Promote and demote reach headings inside containers.
+        expectEdit("# A\n\n- x\n\n  ## N\n\n> ### Q\n^", "## A\n\n- x\n\n  ### N\n\n> #### Q\n^") { c in
+            #expect(c.shiftSection(c.makeOutline(), 0, by: 1, subsections: true))
+        }
+        // The top-level section moves with its list, nested heading and all.
+        expectEdit("^# A\n\n- x\n\n  ## N\n\n# B\n", "^# B\n\n# A\n\n- x\n\n  ## N\n") { c in
+            #expect(c.moveSection(c.makeOutline(), 2, before: 0))
+        }
+    }
+
+    @Test func explicitHeadingIDsAndEmojiInTheOutline() {
+        let o = outline("# Intro {#start}\n\n# Party :tada:\n\n# Intro\n")
+        #expect(o.items.map(\.title) == ["Intro", "Party 🎉", "Intro"])
+        #expect(o.items.map(\.slug) == ["start", "party-", "intro"])
+    }
 }

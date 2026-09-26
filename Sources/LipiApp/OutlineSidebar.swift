@@ -29,6 +29,8 @@ public final class OutlineSidebar: NSView, NSOutlineViewDataSource, NSOutlineVie
 
     let outlineView = FocusingOutlineView()
     let filterField = NSSearchField()
+    /// The front matter title, above the filter when there is one.
+    let titleField = NSTextField(labelWithString: "")
     private let scroll = NSScrollView()
     private var rows: [Row] = []
     private var scheduled = false
@@ -67,6 +69,10 @@ public final class OutlineSidebar: NSView, NSOutlineViewDataSource, NSOutlineVie
         filterField.sendsSearchStringImmediately = true
         filterField.target = self
         filterField.action = #selector(filterChanged(_:))
+        titleField.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        titleField.lineBreakMode = .byTruncatingTail
+        titleField.isHidden = true
+        addSubview(titleField)
         addSubview(filterField)
         addSubview(scroll)
         setAccessibilityRole(.group)
@@ -80,8 +86,10 @@ public final class OutlineSidebar: NSView, NSOutlineViewDataSource, NSOutlineVie
 
     public override func layout() {
         super.layout()
-        filterField.frame = NSRect(x: 8, y: 8, width: max(0, bounds.width - 16), height: 22)
-        scroll.frame = NSRect(x: 0, y: 36, width: bounds.width, height: max(0, bounds.height - 36))
+        let top: CGFloat = titleField.isHidden ? 0 : 26
+        titleField.frame = NSRect(x: 12, y: 8, width: max(0, bounds.width - 24), height: 18)
+        filterField.frame = NSRect(x: 8, y: 8 + top, width: max(0, bounds.width - 16), height: 22)
+        scroll.frame = NSRect(x: 0, y: 36 + top, width: bounds.width, height: max(0, bounds.height - 36 - top))
     }
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -117,6 +125,12 @@ public final class OutlineSidebar: NSView, NSOutlineViewDataSource, NSOutlineVie
     public var visibleItems: [Int] { rows.map(\.index) }
 
     private func reloadRows() {
+        let title = outline.title ?? ""
+        if titleField.stringValue != title || titleField.isHidden != title.isEmpty {
+            titleField.stringValue = title
+            titleField.isHidden = title.isEmpty
+            needsLayout = true
+        }
         let needle = filter.trimmingCharacters(in: .whitespaces)
         rows = outline.items.indices.filter { k in
             let item = outline.items[k]

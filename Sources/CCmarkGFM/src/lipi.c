@@ -195,6 +195,12 @@ int lipi_node_get_ext_type(cmark_node *node) {
     return LIPI_EXT_STRIKETHROUGH;
   if (t == CMARK_NODE_MATH)
     return LIPI_EXT_MATH;
+  if (t == CMARK_NODE_SUBSCRIPT)
+    return LIPI_EXT_SUBSCRIPT;
+  if (t == CMARK_NODE_SUPERSCRIPT)
+    return LIPI_EXT_SUPERSCRIPT;
+  if (t == CMARK_NODE_HIGHLIGHT)
+    return LIPI_EXT_HIGHLIGHT;
   return LIPI_EXT_NONE;
 }
 

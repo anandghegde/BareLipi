@@ -137,7 +137,9 @@ public struct RevealPolicy: Sendable {
                     let onClosing = info.isClosed && caret >= info.contentRange.upperBound
                     if onOpening || onClosing || info.contentRange.isEmpty { set.blocks.insert(block.id) }
                 }
-            case .paragraph, .list, .table, .tableRow, .tableCell, .htmlBlock, .linkReferenceDefinition:
+            case .paragraph:
+                if block.isTableOfContents, within(r) { set.blocks.insert(block.id) }
+            case .list, .table, .tableRow, .tableCell, .htmlBlock, .linkReferenceDefinition:
                 break
             }
             guard within(r) || block.kind == .paragraph else { return }
@@ -160,7 +162,8 @@ public struct RevealPolicy: Sendable {
                 let lineStart = rope.lineRange(rope.line(at: base + r.lowerBound)).lowerBound - base
                 if caret >= max(lineStart, lineContext.lowerBound), caret <= r.upperBound { set.inlines.insert(inline.id) }
                 return
-            case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough, .image:
+            case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough, .image,
+                 .subscript, .superscript, .highlight, .emoji, .attributes:
                 if within(r) { set.inlines.insert(inline.id) }
             case .link(_, _, let isAutolink):
                 guard !isAutolink, within(r) else { break }

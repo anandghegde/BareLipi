@@ -357,15 +357,130 @@ struct ProjectionFoldingTests {
         #expect(displayText("[](x)") == "")
     }
 
-    @Test("footnotes: references show the label, definitions carry it")
+    @Test("footnotes: references show their number, definitions carry label and number")
     func footnotes() {
         let (p, _, _) = project("text[^note]\n\n[^note]: the note")
         let blocks = p.blocks.map(\.block)
         #expect(blocks.count == 2)
-        #expect(blocks[0].cells[0].text == "textnote")
-        #expect(run(blocks[0], .footnoteReference) == [4..<8])
+        #expect(blocks[0].cells[0].text == "text1")
+        #expect(run(blocks[0], .footnoteReference) == [4..<5])
         #expect(blocks[1].cells[0].text == "the note")
         #expect(blocks[1].context.footnoteLabel == "note")
+        #expect(blocks[1].context.footnoteNumber == 1)
+        #expect(blocks[1].context.footnoteRegionStart)
+        var checker = ProjectionChecker("text[^note]\n\n[^note]: the note")
+        checker.check(p)
+        #expect(checker.failures.isEmpty, "\(checker.failures)")
+    }
+
+    @Test("footnotes are numbered by first reference, undefined labels stay labels")
+    func footnoteNumbering() {
+        let text = "a[^z] b[^A] c[^z] d[^none]\n\n[^a]: first\n\n[^z]: zed\n\nafter\n\n[^q]: unused"
+        let (p, _, _) = project(text)
+        let blocks = p.blocks.map(\.block)
+        #expect(blocks[0].cells[0].text == "a1 b2 c1 dnone")
+        #expect(p.footnotes.number(for: "z") == 1)
+        #expect(p.footnotes.number(for: "a") == 2)
+        #expect(p.footnotes.number(for: "q") == nil)
+        #expect(p.footnotes.number(for: "none") == nil)
+        let defs = blocks.filter { $0.context.footnoteLabel != nil }
+        #expect(defs.map(\.context.footnoteNumber) == [2, 1, nil])
+        // A run of definitions starts one region; one after other text starts another.
+        #expect(defs.map(\.context.footnoteRegionStart) == [true, false, true])
+        var checker = ProjectionChecker(text)
+        checker.check(p)
+        #expect(checker.failures.isEmpty, "\(checker.failures)")
+    }
+
+    @Test("editing a reference renumbers the others incrementally")
+    func footnoteRenumbering() {
+        let text = "x[^b]\n\ny[^a]\n\nplain\n\n[^a]: A\n\n[^b]: B\n"
+        var buffer = SourceBuffer(text)
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        var projection = Projection()
+        projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        #expect(projection.blocks[1].block.cells[0].text == "y2")
+        // Delete "[^b]": a becomes 1, b stays defined but unreferenced.
+        let delta = buffer.apply(Edit(replacing: 1..<5, with: ""))
+        parser.apply(delta, then: buffer.rope)
+        let result = projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        #expect(projection.blocks[0].block.cells[0].text == "x")
+        #expect(projection.blocks[1].block.cells[0].text == "y1")
+        // The edited paragraph, y's paragraph and both definitions; not "plain".
+        #expect(result.rebuilt == 4)
+        let defs = projection.blocks.map(\.block).filter { $0.context.footnoteLabel != nil }
+        #expect(defs.map(\.context.footnoteNumber) == [1, nil])
+        var fresh = Projection()
+        fresh.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        #expect(fresh.blocks.map(\.block.cells) == projection.blocks.map(\.block.cells))
+        #expect(fresh.blocks.map(\.block.context) == projection.blocks.map(\.block.context))
+        checkInvariants(buffer.rope.string(in: 0..<buffer.count), projection)
+    }
+
+    @Test("typing beside a footnote reference rebuilds only that paragraph")
+    func footnoteTypingIsLocal() {
+        var text = ""
+        for i in 0..<20 { text += "p\(i)[^n\(i)] words\n\n" }
+        for i in 0..<20 { text += "[^n\(i)]: note \(i)\n\n" }
+        var buffer = SourceBuffer(text)
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        var projection = Projection()
+        projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        for _ in 0..<3 {
+            let at = text.utf8.count / 4 + 3
+            let delta = buffer.apply(Edit(replacing: at..<at, with: "z"))
+            parser.apply(delta, then: buffer.rope)
+            let result = projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+            #expect(result.rebuilt == 1)
+        }
+        var fresh = Projection()
+        fresh.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        #expect(fresh.blocks.map(\.block.cells) == projection.blocks.map(\.block.cells))
+        #expect(fresh.blocks.map(\.block.context) == projection.blocks.map(\.block.context))
+    }
+
+    @Test("in-place edits that change labels, regions or [toc] match a fresh projection")
+    func footnoteInPlaceEdits() {
+        let text = "a[^x] b\n\n[^x]: X\n\nmid\n\n[^y]: Y\n\nlast\n"
+        var buffer = SourceBuffer(text)
+        var parser = LipiParser(options: .editor)
+        parser.parse(buffer.rope)
+        var projection = Projection()
+        projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+        func type(_ s: String, at offset: Int) {
+            var at = offset
+            for ch in s {
+                let delta = buffer.apply(Edit(replacing: at..<at, with: String(ch)))
+                parser.apply(delta, then: buffer.rope)
+                projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+                at += String(ch).utf8.count
+                var fresh = Projection()
+                fresh.update(index: parser.index, rope: buffer.rope, reveal: .none)
+                #expect(fresh.blocks.map(\.block.cells) == projection.blocks.map(\.block.cells))
+                #expect(fresh.blocks.map(\.block.context) == projection.blocks.map(\.block.context))
+                #expect(fresh.footnotes == projection.footnotes)
+                #expect((fresh.tableOfContents == nil) == (projection.tableOfContents == nil))
+            }
+        }
+        // "mid" becomes a definition: [^y] no longer starts a region.
+        type("[^z]: ", at: text.utf8.count - "mid\n\n[^y]: Y\n\nlast\n".utf8.count)
+        // A reference in the last paragraph, then a [toc] placeholder.
+        type(" [^y]", at: buffer.count - 1)
+        type("\n\n[toc]", at: buffer.count - 1)
+    }
+
+    @Test("source mode shows footnote labels as written")
+    func footnoteSourceMode() {
+        let rope = LipiRope("t[^n]\n\n[^n]: x")
+        var parser = LipiParser(options: .editor)
+        parser.parse(rope)
+        var projection = Projection()
+        projection.sourceMode = true
+        projection.update(index: parser.index, rope: rope, reveal: .none)
+        #expect(projection.footnotes.isEmpty)
+        #expect(projection.blocks[0].block.cells[0].text.hasPrefix("t[^n]"))
     }
 
     @Test("containers fold into context")

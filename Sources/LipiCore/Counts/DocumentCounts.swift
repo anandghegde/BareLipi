@@ -192,9 +192,11 @@ public struct DocumentCounter: Sendable {
             text += " "
         case .lineBreak:
             text += "\n"
-        case .html, .image, .footnoteReference:
+        case .emoji(let s):
+            text += s
+        case .html, .image, .footnoteReference, .attributes:
             return
-        case .emphasis, .strong, .strikethrough, .link:
+        case .emphasis, .strong, .strikethrough, .subscript, .superscript, .highlight, .link:
             for child in inline.children { appendText(of: child, base: base, clip: clip, to: &text) }
         }
     }

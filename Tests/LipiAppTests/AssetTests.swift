@@ -22,6 +22,11 @@ struct AssetTests {
         #expect(AssetPolicy.frontMatterValue("typora-root-url", in: text) == "..")
         #expect(AssetPolicy.frontMatterValue("title", in: "# no front matter\ntitle: x") == nil)
         #expect(AssetPolicy.frontMatterValue("assets", in: "---\nx: 1\n---\nassets: late\n") == nil)
+        // Parsed, not scanned: TOML, nested keys and malformed blocks.
+        #expect(AssetPolicy.frontMatterValue("assets", in: "+++\nassets = 'toml/img'\n+++\n") == "toml/img")
+        #expect(AssetPolicy.frontMatterValue("assets", in: "---\nsite:\n  assets: nested\n---\n") == nil)
+        #expect(AssetPolicy.frontMatterValue("assets", in: "---\nassets: [x\n---\n") == nil)
+        #expect(AssetPolicy.frontMatterValue("assets", in: "---\nassets: >-\n  folded/\n  path\n---\n") == "folded/ path")
     }
 
     @Test func targetFolders() {

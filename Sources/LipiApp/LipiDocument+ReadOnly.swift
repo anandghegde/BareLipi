@@ -69,10 +69,11 @@ extension LipiDocument {
 // MARK: - Images (P0-07)
 
 extension LipiDocument: EditorImageHandler {
-    /// The start of the text, enough for the front matter keys.
+    /// The document's front matter block (delimiters included), or "".
     var frontMatterText: String {
-        guard let controller = windowController?.controller else { return "" }
-        return controller.string(in: 0..<min(controller.count, 16_384))
+        guard let controller = windowController?.controller, let first = controller.blockIndex.entries.first,
+              first.block.kind.isFrontMatter else { return "" }
+        return controller.string(in: 0..<first.block.range.upperBound)
     }
 
     public func importImages(_ images: [ImagePayload]) -> [String] {

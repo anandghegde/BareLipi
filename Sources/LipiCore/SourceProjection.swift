@@ -185,6 +185,16 @@ struct SourceEntryProjector {
             paintContainer(inline, style: .strong)
         case .strikethrough:
             paintContainer(inline, style: .strikethrough)
+        case .subscript:
+            paintContainer(inline, style: .subscript)
+        case .superscript:
+            paintContainer(inline, style: .superscript)
+        case .highlight:
+            paintContainer(inline, style: .highlight)
+        case .emoji:
+            break
+        case .attributes:
+            add(r, .syntax)
         case .footnoteReference:
             add(r, .syntax)
         case .link(_, _, let isAutolink):

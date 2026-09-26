@@ -45,6 +45,13 @@ let package = Package(
             exclude: ["LICENSES", "yaml/schema.core.c", "yaml/schema.json.c", "yaml/schema.legacy.c"],
             cSettings: [.unsafeFlags(["-w", "-Os"])]
         ),
+        // Front matter parsers (§6.13), vendored and pinned: Yams 6.2.2
+        // (MIT, with libyaml as CYaml) and TOMLKit 0.6.0 (MIT, a C wrapper
+        // around toml++ 3, compiled as C++17; Swift sees only C).
+        .target(name: "CYaml", exclude: ["LICENSE"], cSettings: [.define("YAML_DECLARE_STATIC")]),
+        .target(name: "Yams", dependencies: ["CYaml"], exclude: ["LICENSE"], cSettings: [.define("YAML_DECLARE_STATIC")]),
+        .target(name: "CTOML", exclude: ["LICENSE"], cxxSettings: [.define("TOML_EXCEPTIONS", to: "1"), .unsafeFlags(["-w"])]),
+        .target(name: "TOMLKit", dependencies: ["CTOML"], exclude: ["LICENSE"], swiftSettings: [.swiftLanguageMode(.v5)]),
         // Fenced-code highlighting (P0-05, ADR-007): GrammarBundle maps info
         // strings to grammars, HighlightService parses and runs the
         // highlights query off the main thread and caches spans by content.
@@ -54,9 +61,10 @@ let package = Package(
             swiftSettings: strict
         ),
         // Rope, source buffer, parser, projection. Pure Swift values.
+        // Front matter values are parsed with Yams and TOMLKit.
         .target(
             name: "LipiCore",
-            dependencies: ["CCmarkGFM"],
+            dependencies: ["CCmarkGFM", "Yams", "TOMLKit"],
             swiftSettings: strict
         ),
         // Core Text block layout (ADR-002): font cascade, type scale,
@@ -117,5 +125,6 @@ let package = Package(
             resources: [.copy("Baselines")]
         ),
     ],
-    cLanguageStandard: .c11
+    cLanguageStandard: .c11,
+    cxxLanguageStandard: .cxx17
 )

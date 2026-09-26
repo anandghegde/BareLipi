@@ -1,8 +1,12 @@
 #include "strikethrough.h"
+#include "lipi_cmark.h"
+#include "lipi_inline.h"
 #include <parser.h>
 #include <render.h>
 
 cmark_node_type CMARK_NODE_STRIKETHROUGH;
+/* lipi: `~x~` subscript under LIPI_OPT_SUBSCRIPT (PATCHES.md §7). */
+cmark_node_type CMARK_NODE_SUBSCRIPT;
 
 static cmark_node *match(cmark_syntax_extension *self, cmark_parser *parser,
                          cmark_node *parent, unsigned char character,
@@ -29,7 +33,16 @@ static cmark_node *match(cmark_syntax_extension *self, cmark_parser *parser,
   res->lipi_end = cmark_inline_parser_get_offset(inline_parser);
   res->lipi_start = res->lipi_end - delims;
 
-  if ((left_flanking || right_flanking) &&
+  if ((parser->options & LIPI_OPT_SUBSCRIPT) && delims == 1) {
+    /* lipi: Pandoc subscript; `~~` stays strikethrough. */
+    cmark_chunk *chunk = cmark_inline_parser_get_chunk(inline_parser);
+    int pos = res->lipi_start;
+    int can_open = lipi_script_can_open(chunk->data, chunk->len, pos, '~');
+    int can_close = lipi_script_can_close(chunk->data, chunk->len, pos, '~');
+    if (can_open || can_close)
+      cmark_inline_parser_push_delimiter(inline_parser, character, can_open,
+                                         can_close, res);
+  } else if ((left_flanking || right_flanking) &&
       (delims == 2 || (!(parser->options & CMARK_OPT_STRIKETHROUGH_DOUBLE_TILDE) && delims == 1))) {
     cmark_inline_parser_push_delimiter(inline_parser, character, left_flanking,
                                        right_flanking, res);
@@ -45,6 +58,11 @@ static delimiter *insert(cmark_syntax_extension *self, cmark_parser *parser,
   cmark_node *tmp, *next;
   delimiter *delim, *tmp_delim;
   delimiter *res = closer->next;
+
+  if ((parser->options & LIPI_OPT_SUBSCRIPT) &&
+      opener->inl_text->as.literal.len == 1)
+    return lipi_insert_span(self, inline_parser, opener, closer,
+                            CMARK_NODE_SUBSCRIPT);
 
   strikethrough = opener->inl_text;
 
@@ -85,12 +103,15 @@ done:
 
 static const char *get_type_string(cmark_syntax_extension *extension,
                                    cmark_node *node) {
+  if (node->type == CMARK_NODE_SUBSCRIPT)
+    return "subscript";
   return node->type == CMARK_NODE_STRIKETHROUGH ? "strikethrough" : "<unknown>";
 }
 
 static int can_contain(cmark_syntax_extension *extension, cmark_node *node,
                        cmark_node_type child_type) {
-  if (node->type != CMARK_NODE_STRIKETHROUGH)
+  if (node->type != CMARK_NODE_STRIKETHROUGH &&
+      node->type != CMARK_NODE_SUBSCRIPT)
     return false;
 
   return CMARK_NODE_TYPE_INLINE_P(child_type);
@@ -99,7 +120,9 @@ static int can_contain(cmark_syntax_extension *extension, cmark_node *node,
 static void commonmark_render(cmark_syntax_extension *extension,
                               cmark_renderer *renderer, cmark_node *node,
                               cmark_event_type ev_type, int options) {
-  renderer->out(renderer, node, "~~", false, LITERAL);
+  renderer->out(renderer, node,
+                node->type == CMARK_NODE_SUBSCRIPT ? "~" : "~~", false,
+                LITERAL);
 }
 
 static void latex_render(cmark_syntax_extension *extension,
@@ -131,6 +154,10 @@ static void html_render(cmark_syntax_extension *extension,
                         cmark_html_renderer *renderer, cmark_node *node,
                         cmark_event_type ev_type, int options) {
   bool entering = (ev_type == CMARK_EVENT_ENTER);
+  if (node->type == CMARK_NODE_SUBSCRIPT) {
+    cmark_strbuf_puts(renderer->html, entering ? "<sub>" : "</sub>");
+    return;
+  }
   if (entering) {
     cmark_strbuf_puts(renderer->html, "<del>");
   } else {
@@ -156,6 +183,7 @@ cmark_syntax_extension *create_strikethrough_extension(void) {
   cmark_syntax_extension_set_html_render_func(ext, html_render);
   cmark_syntax_extension_set_plaintext_render_func(ext, plaintext_render);
   CMARK_NODE_STRIKETHROUGH = cmark_syntax_extension_add_node(1);
+  CMARK_NODE_SUBSCRIPT = cmark_syntax_extension_add_node(1);
 
   cmark_syntax_extension_set_match_inline_func(ext, match);
   cmark_syntax_extension_set_inline_from_delim_func(ext, insert);

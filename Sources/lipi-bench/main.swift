@@ -143,3 +143,44 @@ time("re-parse: blank line splits a block", iterations: 500) {
     }
 }
 print("  entries \(parser.index.count)")
+
+// MARK: - Projection
+
+/// Projection cost per keystroke: a caret move touches at most two entries;
+/// an edit re-projects the re-parsed entries only.
+print("")
+var projection = Projection()
+let policy = RevealPolicy()
+time("project 1 MB from scratch", iterations: 5) {
+    for _ in 0..<5 {
+        projection = Projection()
+        projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+    }
+}
+var blockCount = 0
+for e in projection.entries { blockCount += e.blocks.count }
+print("  entries \(projection.entries.count), display blocks \(blockCount)")
+time("caret move: reveal set + projection update", iterations: 2_000) {
+    for o in editOffsets {
+        let caret = buffer.rope.floorScalarBoundary(o)
+        let reveal = policy.revealSet(caret: caret, index: parser.index, rope: buffer.rope)
+        projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
+    }
+}
+time("typing: parse + reveal + projection update", iterations: 2_000) {
+    var caret = buffer.count / 3
+    for _ in 0..<2_000 {
+        let delta = buffer.apply(.insert("k", at: SourceOffset(caret)))
+        parser.apply(delta, then: buffer.rope)
+        caret += 1
+        let reveal = policy.revealSet(caret: caret, index: parser.index, rope: buffer.rope)
+        projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
+    }
+}
+time("source ↔ display position lookup", iterations: 2_000) {
+    var acc = 0
+    for o in editOffsets {
+        if let p = projection.position(forSource: o) { acc &+= projection.sourceOffset(for: p) }
+    }
+    if acc == 42 { print(acc) }
+}

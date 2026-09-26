@@ -197,3 +197,24 @@ int lipi_node_get_ext_type(cmark_node *node) {
     return LIPI_EXT_MATH;
   return LIPI_EXT_NONE;
 }
+
+/* Entity decoding for the projection layer. */
+#include "houdini.h"
+#include "buffer.h"
+
+int lipi_decode_entity(const uint8_t *src, int size, uint8_t *out, int out_cap,
+                       int *out_len) {
+  *out_len = 0;
+  if (size < 3 || src[0] != '&')
+    return 0;
+  cmark_strbuf buf = CMARK_BUF_INIT(cmark_get_default_mem_allocator());
+  bufsize_t consumed = houdini_unescape_ent(&buf, src + 1, size - 1);
+  int result = 0;
+  if (consumed > 0 && buf.size > 0 && buf.size <= out_cap) {
+    memcpy(out, buf.ptr, (size_t)buf.size);
+    *out_len = (int)buf.size;
+    result = (int)consumed + 1;
+  }
+  cmark_strbuf_free(&buf);
+  return result;
+}

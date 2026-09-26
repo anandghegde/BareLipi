@@ -111,6 +111,13 @@ const char *lipi_node_get_label(cmark_node *node, int *len);
 #define LIPI_EXT_MATH 5
 int lipi_node_get_ext_type(cmark_node *node);
 
+/* Decode one HTML entity (`&amp;`, `&#38;`, `&#x26;`) at `src`, which must
+ * start with `&`. Writes the UTF-8 of the decoded character(s) to `out` and
+ * its length to `out_len`; returns the number of source bytes consumed
+ * (including `&` and `;`) or 0 when `src` does not start a valid entity. */
+int lipi_decode_entity(const uint8_t *src, int size, uint8_t *out, int out_cap,
+                       int *out_len);
+
 #ifdef __cplusplus
 }
 #endif

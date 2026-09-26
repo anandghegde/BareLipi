@@ -11,6 +11,7 @@ The product requirements document lives in the Claude Doc "BareLipi PRD — Nati
 | `Sources/LipiCore` | Pure Swift document core: `LipiRope`, `SourceOffset`, `Edit`, `Delta`, `SourceBuffer` |
 | `Sources/LipiCore/Rope` | Persistent UTF-8 B-tree rope with byte / UTF-16 / scalar / line summaries |
 | `Sources/LipiCore/Parser` | `LipiParser` (value AST with byte ranges), `BlockIndex` incremental re-parse, front matter, cmark bridge |
+| `Sources/LipiCore/Projection` | `Projection`: source → display blocks with `OffsetMap`s, `RevealPolicy` (PRD §6.1) |
 | `Sources/CCmarkGFM` | Vendored cmark-gfm 0.29.0.gfm.13 with source-position patches and a math extension (`PATCHES.md`) |
 | `Sources/BareLipi` | Placeholder AppKit shell (SwiftPM executable) |
 | `Sources/lipi-bench` | Release-mode micro-benchmarks for the core |
@@ -64,6 +65,14 @@ Requires Xcode 26 / Swift 6.3 and macOS 15 or later at runtime.
   | Re-parse after a 1-char insert in a random 2 KB block | 0.13 ms |
   | Re-parse while typing at one caret | 0.14 ms |
   | Re-parse after a blank line splits a block | 0.11 ms |
+- [x] `Projection` (PRD §6.1.1–6.1.3): per-top-level-block display blocks with entry-local `OffsetMap`s (copied / hidden / replaced segments, UTF-16 display offsets, caret resolution rules for folded markers); `RevealPolicy` implements the §6.1.2 reveal rules for the Balanced, Typora-compatible and Stable presets; entries are rebuilt only when re-parsed or when the caret's reveal set changes. Every node kind is covered by `ProjectionTests`, and the tiling / round-trip invariants (`sourceToDisplay(displayToSource(δ)) == δ`) hold over the spec suites folded, in source mode and at random carets, and across 6 × 40 random edits against a fresh projection. `lipi-bench`, release, M-series, 1 MB document:
+
+  | Operation | Per op |
+  | --- | --- |
+  | Project 1 MB from scratch (1023 blocks) | 9.6 ms |
+  | Caret move: reveal set + projection update | 80 µs |
+  | Typing: re-parse + reveal + projection update | 145 µs |
+  | Source ↔ display position lookup | 0.5 µs |
 - [ ] Layout spike: `LipiLayout` versus headless TextKit 2 (ADR-002 go/no-go)
 - [ ] Performance harness and fixtures (PRD §9.1)
 

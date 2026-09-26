@@ -55,6 +55,9 @@ The C surface that `Sources/LipiCore/Parser/CMarkBridge.swift` reads:
 - Accessors for details cmark keeps private: bullet char, setext flag,
   fence char/length/offset, task-list items, footnote labels, the
   extension node kind (`LIPI_EXT_*`) and `lipi_math_get`.
+- `lipi_decode_entity`: decodes one `&…;` character reference with
+  cmark's own entity table (`houdini_unescape_ent`) so the projection
+  layer folds entities to exactly the characters the parser saw.
 - Flags: `LIPI_FLAG_AUTOLINK` (link came from `<…>` or a bare GFM URL),
   `LIPI_FLAG_APPROX` (range derived from decoded text, may be inexact),
   `LIPI_FLAG_FENCE_CLOSED` (a closing fence was seen; the code block's

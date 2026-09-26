@@ -91,6 +91,39 @@ public struct Typesetter {
         }
     }
 
+    /// Column alignment of a cell (`.none` outside tables).
+    public func alignment(of block: DisplayBlock, cellIndex: Int) -> ColumnAlignment {
+        guard let table = block.table else { return .none }
+        let column = table.position(ofCell: cellIndex).column
+        return column < table.alignments.count ? table.alignments[column] : .none
+    }
+
+    /// The key `typeset` gives a cell, without building its attributed
+    /// string: text, role, zoom, inline runs and alignment. Equal keys mean
+    /// an identical layout at the same width; the table layout compares them
+    /// to skip cells that did not change.
+    public func key(for cell: DisplayCell, in block: DisplayBlock, cellIndex: Int) -> UInt64 {
+        key(text: cell.text, runs: cell.runs, role: role(of: block, cellIndex: cellIndex),
+            alignment: alignment(of: block, cellIndex: cellIndex))
+    }
+
+    func key(text: String, runs: [StyleRun], role: TextRole, alignment: ColumnAlignment) -> UInt64 {
+        var hasher = FNV()
+        hasher.combine(text)
+        hasher.combine(role.hashValue)
+        hasher.combine(Int(scale.zoom * 100))
+        for run in runs where !run.range.isEmpty {
+            hasher.combine(run.range.lowerBound); hasher.combine(run.range.upperBound); hasher.combine(Int(run.style.rawValue))
+        }
+        switch alignment {
+        case .none: hasher.combine(0)
+        case .left: hasher.combine(1)
+        case .center: hasher.combine(2)
+        case .right: hasher.combine(3)
+        }
+        return hasher.value
+    }
+
     public func typeset(_ cell: DisplayCell, in block: DisplayBlock, cellIndex: Int) -> TypesetCell {
         let role = self.role(of: block, cellIndex: cellIndex)
         let style = scale.style(for: role)
@@ -98,11 +131,7 @@ public struct Typesetter {
         let runs = scriptRuns(of: text)
         let tall = runs.contains { $0.script.lineHeightClass == .tall }
         let lineHeight = tall ? (style.lineHeight * scale.tallRatio).rounded(.up) : style.lineHeight
-        let alignment: ColumnAlignment = {
-            guard let table = block.table else { return .none }
-            let column = table.position(ofCell: cellIndex).column
-            return column < table.alignments.count ? table.alignments[column] : .none
-        }()
+        let alignment = self.alignment(of: block, cellIndex: cellIndex)
         let isRTL = runs.first?.script.isRightToLeft ?? false
 
         let result = NSMutableAttributedString(string: text)
@@ -122,14 +151,9 @@ public struct Typesetter {
         setColor(scale.color(style.ink), on: result, range: whole)
 
         var decorations: [Decoration] = []
-        var hasher = FNV()
-        hasher.combine(text)
-        hasher.combine(role.hashValue)
-        hasher.combine(Int(scale.zoom * 100))
 
         // Non-font attributes of the inline runs.
         for run in cell.runs where !run.range.isEmpty {
-            hasher.combine(run.range.lowerBound); hasher.combine(run.range.upperBound); hasher.combine(Int(run.style.rawValue))
             let range = NSRange(location: run.range.lowerBound, length: run.range.count)
             let s = run.style
             if s.contains(.syntax) { setColor(colors.syntax, on: result, range: range) }
@@ -175,7 +199,7 @@ public struct Typesetter {
 
         return TypesetCell(attributed: result, role: role, style: style, lineHeight: lineHeight,
                            lineHeightClass: tall ? .tall : .standard, decorations: decorations, alignment: alignment,
-                           isRightToLeft: isRTL, key: hasher.value)
+                           isRightToLeft: isRTL, key: key(text: text, runs: cell.runs, role: role, alignment: alignment))
     }
 
     /// Font for an inline style inside a role, resolved through the cascade.

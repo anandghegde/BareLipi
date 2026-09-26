@@ -304,23 +304,21 @@ extension LayoutEngine {
         let minColumn = (scale.style(for: .tableCell).size * 3).rounded() + 2 * px
         let maxColumn = max(minColumn, width * 0.6)
 
-        // Typeset every cell (reusing unchanged ones), measure at unbounded
-        // width to learn the natural width.
+        // Typeset the cells whose key changed and measure them at unbounded
+        // width to learn their natural width; the others keep their layout.
+        // Keys are computed without typesetting, so an edit in one cell of a
+        // 600 × 6 table hashes 3,600 short strings and typesets one.
         let prev = previous?.table
         let prevCells = previous?.cells ?? []
         let canReuse = prev != nil && prev!.columns == columns && prev!.rows == rows && prevCells.count == columns * rows
-        var typesets: [TypesetCell] = []
-        typesets.reserveCapacity(columns * rows)
         var natural: [CellLayout?] = Array(repeating: nil, count: columns * rows)
         var changed = [Bool](repeating: !canReuse, count: columns * rows)
         for i in 0..<(columns * rows) {
-            let t = typesetter.typeset(block.cells[i], in: block, cellIndex: i)
-            typesets.append(t)
-            if canReuse, prev!.cellKeys[i] == t.key {
+            if canReuse, prev!.cellKeys[i] == typesetter.key(for: block.cells[i], in: block, cellIndex: i) {
                 natural[i] = prevCells[i]
             } else {
                 changed[i] = true
-                natural[i] = typeset(t, width: .infinity)
+                natural[i] = typeset(typesetter.typeset(block.cells[i], in: block, cellIndex: i), width: .infinity)
             }
         }
         // Natural column widths. Reused cells contribute their laid-out width
@@ -367,13 +365,13 @@ extension LayoutEngine {
             let columnChanged = prev.map { $0.columnWidths[c] != widths[c] } ?? true
             if !changed[i], !columnChanged {
                 cells.append(cell)
-            } else if cell.isSingleLine, cell.usedWidth <= inner, typesets[i].flushFactor == 0 {
+            } else if cell.isSingleLine, cell.usedWidth <= inner, cell.typeset.flushFactor == 0 {
                 // Natural layouts were measured unbounded, so they only stand
                 // in for left-aligned cells; centred and right-aligned ones
                 // are placed again at the column width.
                 cells.append(cell)
             } else {
-                cells.append(typeset(typesets[i], width: inner))
+                cells.append(typeset(cell.typeset, width: inner))
             }
         }
         var rowHeights = [CGFloat](repeating: 0, count: rows)
@@ -392,7 +390,7 @@ extension LayoutEngine {
             y += rowHeights[r]
         }
         let table = TableLayout(columns: columns, rows: rows, columnWidths: widths, rowHeights: rowHeights,
-                                cellKeys: typesets.map(\.key), paddingX: px, paddingY: py)
+                                cellKeys: natural.map { $0!.typeset.key }, paddingX: px, paddingY: py)
         return BlockLayout(id: block.id, layoutKey: block.layoutKey, role: block.role, style: style, context: block.context,
                            isRevealed: block.isRevealed, width: width, indent: indent, cells: cells, cellFrames: frames,
                            table: table, height: y + scale.paragraphSpacing)

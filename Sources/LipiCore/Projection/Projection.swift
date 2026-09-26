@@ -30,6 +30,12 @@ public struct Projection: Sendable {
         public var reused = 0
         /// Indices of entries whose display blocks changed.
         public var changedEntries: [Int] = []
+
+        public init(rebuilt: Int = 0, reused: Int = 0, changedEntries: [Int] = []) {
+            self.rebuilt = rebuilt
+            self.reused = reused
+            self.changedEntries = changedEntries
+        }
     }
 
     public init(preset: RevealPreset = .balanced) {

@@ -1,21 +1,15 @@
+import CoreGraphics
 import Foundation
 import LipiCore
+import LipiFixtures
+import LipiLayout
 
 setvbuf(stdout, nil, _IONBF, 0)
 
-/// Phase 0 micro-benchmarks for the rope. Run with `swift run -c release lipi-bench`.
-/// Exit criterion (PRD §10, Phase 0): random insert into a 1 MB document under 5 µs.
-
-struct SplitMix64: RandomNumberGenerator {
-    var state: UInt64
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
+/// Phase 0 micro-benchmarks. Run with `swift run -c release lipi-bench`.
+/// Rope exit criterion (PRD §10, Phase 0): random insert into a 1 MB document
+/// under 5 µs. The layout section at the end is the ADR-002 spike:
+/// `LipiLayout` against headless TextKit 2 on the §9.1 fixtures.
 
 @inline(never)
 func time(_ label: String, iterations: Int, _ body: () -> Void) {
@@ -35,7 +29,7 @@ let line = "The quick brown fox jumps over the lazy dog. ಬರೆ ಲಿಪಿ 
 let oneMB = String(repeating: line, count: 1_048_576 / line.utf8.count + 1)
 print("document: \(oneMB.utf8.count) bytes, \(oneMB.unicodeScalars.count) scalars")
 
-var rng = SplitMix64(state: 7)
+var rng = SplitMix64(seed: 7)
 var rope = LipiRope()
 
 time("build rope from 1 MB string", iterations: 1) { rope = LipiRope(oneMB) }
@@ -117,7 +111,7 @@ time("full parse 1 MB", iterations: 5) {
 
 var buffer = SourceBuffer(markdownMB)
 parser.parse(buffer.rope)
-var parserRNG = SplitMix64(state: 11)
+var parserRNG = SplitMix64(seed: 11)
 var editOffsets: [Int] = []
 for _ in 0..<2_000 { editOffsets.append(Int(parserRNG.next() % UInt64(buffer.count))) }
 time("re-parse: 1-char insert, random 2 KB block", iterations: 2_000) {
@@ -183,4 +177,164 @@ time("source ↔ display position lookup", iterations: 2_000) {
         if let p = projection.position(forSource: o) { acc &+= projection.sourceOffset(for: p) }
     }
     if acc == 42 { print(acc) }
+}
+
+// MARK: - Layout (ADR-002 spike)
+
+/// Resident memory (`phys_footprint`), the number Activity Monitor shows.
+func physFootprint() -> Int {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+    }
+    return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+}
+
+func megabytes(_ bytes: Int) -> String { String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+
+print("")
+print("layout (ADR-002 spike): LipiLayout vs headless TextKit 2, viewport 1000 × 800 @2x")
+let theme = Theme.paper
+let typesetter = Typesetter(scale: TypeScale(theme: theme), cascade: FontCascade(theme: theme))
+let renderer = Renderer(typesetter: typesetter)
+let viewport = CGRect(x: 0, y: 0, width: 1000, height: 800)
+let bitmap = CGContext(data: nil, width: 2000, height: 1600, bitsPerComponent: 8, bytesPerRow: 0,
+                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+bitmap.scaleBy(x: 2, y: 2)
+// Warm the font caches once so the first fixture is not charged for them.
+_ = typesetter.cascade.zeroAdvance(size: 17)
+
+for fixture in [PerfFixture.lorem50k, .kannada20k, .tables600x6] {
+    let name = fixture.rawValue
+    let text = fixture.text()
+    print("")
+    print("\(name): \(text.utf8.count) bytes")
+    var buffer = SourceBuffer(text)
+    var parser = LipiParser(options: .editor)
+    let policy = RevealPolicy()
+    var projection = Projection()
+    var result = Projection.UpdateResult()
+    let before = physFootprint()
+    time("\(name): parse", iterations: 1) { parser.parse(buffer.rope) }
+    time("\(name): project", iterations: 1) {
+        result = projection.update(index: parser.index, rope: buffer.rope, reveal: .none)
+    }
+    let layout = DocumentLayout(typesetter: typesetter, viewportWidth: 1000)
+    layout.update(projection: projection, result: result)
+    var placed: [PlacedEntry] = []
+    time("\(name): lipi first screen layout", iterations: 1) { placed = layout.layoutIfNeeded(in: 0...800) }
+    // The first draw rasterises the glyphs into Core Text's cache; the second
+    // is the steady state.
+    time("\(name): lipi first screen draw (cold)", iterations: 1) {
+        renderer.draw(placed, layout: layout, in: bitmap, dirty: viewport)
+    }
+    time("\(name): lipi first screen draw (warm)", iterations: 1) {
+        renderer.draw(placed, layout: layout, in: bitmap, dirty: viewport)
+    }
+    time("\(name): lipi full layout", iterations: 1) { layout.layoutAll() }
+    let afterLipi = physFootprint()
+    print("  entries \(layout.entryCount), blocks laid out \(layout.stats.blocksLaidOut), content height \(Int(layout.contentHeight)) pt, "
+          + "+\(megabytes(afterLipi - before)) resident")
+
+    // A keystroke in the middle of the document: §7.4 steps 2–8 (buffer,
+    // parser, reveal, projection, layout update, entry layout, caret rect)
+    // and then step 9, drawing the screen around the caret.
+    var caret = buffer.rope.floorScalarBoundary(buffer.count / 2)
+    if fixture == .tables600x6 {
+        // Land inside a cell on a body row: two bytes after the line start.
+        var line = buffer.rope.line(at: caret)
+        while buffer.rope.string(in: buffer.rope.lineRange(line)).contains("---") { line += 1 }
+        caret = buffer.rope.lineRange(line).lowerBound + 2
+    }
+    if let entry = projection.position(forSource: caret)?.entry, projection.entries[entry].blocks.first?.table != nil {
+        layout.growOnlyEntry = entry
+    }
+    var split = (parse: 0.0, project: 0.0, layout: 0.0, draw: 0.0)
+    func now() -> Double { Double(DispatchTime.now().uptimeNanoseconds) }
+    func keystroke(draw: Bool) {
+        let t0 = now()
+        let delta = buffer.apply(.insert("k", at: SourceOffset(caret)))
+        parser.apply(delta, then: buffer.rope)
+        caret += 1
+        let t1 = now()
+        let reveal = policy.revealSet(caret: caret, index: parser.index, rope: buffer.rope)
+        let update = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
+        let t2 = now()
+        layout.update(projection: projection, result: update)
+        guard let rect = layout.caretRect(forSource: caret) else { return }
+        let t3 = now()
+        split.parse += t1 - t0; split.project += t2 - t1; split.layout += t3 - t2
+        if draw {
+            let screen = CGRect(x: 0, y: (rect.midY - 400).rounded(), width: 1000, height: 800)
+            let visible = layout.layoutIfNeeded(in: screen.minY...screen.maxY)
+            bitmap.saveGState()
+            bitmap.translateBy(x: 0, y: -screen.minY)
+            renderer.draw(visible, layout: layout, in: bitmap, dirty: screen)
+            bitmap.restoreGState()
+            split.draw += now() - t3
+        }
+    }
+    time("\(name): lipi keystroke → caret rect", iterations: 200) { for _ in 0..<200 { keystroke(draw: false) } }
+    split = (0, 0, 0, 0)
+    time("\(name): lipi keystroke → screen drawn", iterations: 200) { for _ in 0..<200 { keystroke(draw: true) } }
+    print(String(format: "  per keystroke: parse %.0f µs, reveal+project %.0f µs, layout+caret %.0f µs, draw %.0f µs; cache hits %d, misses %d",
+                 split.parse / 200_000, split.project / 200_000, split.layout / 200_000, split.draw / 200_000, layout.cache.hits, layout.cache.misses))
+    var probeRNG = SplitMix64(seed: 5)
+    let probes = (0..<10_000).map { _ in buffer.rope.floorScalarBoundary(probeRNG.below(buffer.count)) }
+    time("\(name): lipi caret rect (random offset)", iterations: 10_000) {
+        var acc: CGFloat = 0
+        for o in probes { acc += layout.caretRect(forSource: o)?.minY ?? 0 }
+        if acc == 42 { print(acc) }
+    }
+    let points = probes.map { _ in CGPoint(x: CGFloat(probeRNG.below(1000)), y: CGFloat(probeRNG.below(Int(layout.contentHeight)))) }
+    time("\(name): lipi hit test (random point)", iterations: 10_000) {
+        var acc = 0
+        for p in points { acc &+= layout.sourceOffset(at: p) ?? 0 }
+        if acc == 42 { print(acc) }
+    }
+
+    // TextKit 2 on the same projection, at the same text-column width.
+    let tk = TextKit2Layout(width: layout.measure)
+    let beforeTK = physFootprint()
+    time("\(name): tk2 load (attributed string)", iterations: 1) { tk.load(projection, typesetter: typesetter) }
+    time("\(name): tk2 first screen layout", iterations: 1) { tk.ensureLayout(toY: 800) }
+    time("\(name): tk2 first screen draw", iterations: 1) { tk.draw(in: bitmap, rect: viewport) }
+    time("\(name): tk2 first screen draw (warm)", iterations: 1) { tk.draw(in: bitmap, rect: viewport) }
+    time("\(name): tk2 full layout", iterations: 1) { tk.ensureLayoutToEnd() }
+    let afterTK = physFootprint()
+    print("  used height \(Int(tk.usedHeight)) pt, +\(megabytes(afterTK - beforeTK)) resident")
+    func tkKeystroke(draw: Bool) {
+        let delta = buffer.apply(.insert("k", at: SourceOffset(caret)))
+        parser.apply(delta, then: buffer.rope)
+        caret += 1
+        let reveal = policy.revealSet(caret: caret, index: parser.index, rope: buffer.rope)
+        let update = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
+        for i in update.changedEntries { tk.replaceEntry(i, with: projection.entries[i], typesetter: typesetter) }
+        guard let position = projection.position(forSource: caret),
+              let rect = tk.caretRect(forDocumentOffset: tk.documentOffset(of: position)) else { return }
+        if draw {
+            let screen = CGRect(x: 0, y: (rect.midY - 400).rounded(), width: 1000, height: 800)
+            bitmap.saveGState()
+            bitmap.translateBy(x: 0, y: -screen.minY)
+            tk.draw(in: bitmap, rect: screen)
+            bitmap.restoreGState()
+        }
+    }
+    time("\(name): tk2 keystroke → caret rect", iterations: 200) { for _ in 0..<200 { tkKeystroke(draw: false) } }
+    time("\(name): tk2 keystroke → screen drawn", iterations: 200) { for _ in 0..<200 { tkKeystroke(draw: true) } }
+    time("\(name): tk2 caret rect (random offset)", iterations: 10_000) {
+        var acc: CGFloat = 0
+        for o in probes {
+            if let p = projection.position(forSource: o) { acc += tk.caretRect(forDocumentOffset: tk.documentOffset(of: p))?.minY ?? 0 }
+        }
+        if acc == 42 { print(acc) }
+    }
+    let tkPoints = points.map { CGPoint(x: min($0.x, layout.measure - 1), y: min($0.y, tk.usedHeight - 1)) }
+    time("\(name): tk2 hit test (random point)", iterations: 10_000) {
+        var acc = 0
+        for p in tkPoints { acc &+= tk.documentOffset(at: p) ?? 0 }
+        if acc == 42 { print(acc) }
+    }
 }

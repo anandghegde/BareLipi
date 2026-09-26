@@ -24,6 +24,35 @@ let package = Package(
                 .headerSearchPath("extensions"),
             ]
         ),
+        // Vendored tree-sitter 0.25.10 runtime (MIT), built from its
+        // single-file amalgamation. Scripts/vendor-tree-sitter.py.
+        .target(
+            name: "CTreeSitter",
+            exclude: ["LICENSE"],
+            sources: ["src/lib.c"],
+            cSettings: [
+                .headerSearchPath("src"),
+                .define("_POSIX_C_SOURCE", to: "200112L"),
+                .define("_DEFAULT_SOURCE"),
+                .unsafeFlags(["-w"]),
+            ]
+        ),
+        // The PRD Appendix A.4 grammars (generated parser.c + scanner.c per
+        // language, licences in LICENSES/). Built optimised even in debug:
+        // they are tables and hand-written scanners, never stepped through.
+        .target(
+            name: "CTreeSitterGrammars",
+            exclude: ["LICENSES", "yaml/schema.core.c", "yaml/schema.json.c", "yaml/schema.legacy.c"],
+            cSettings: [.unsafeFlags(["-w", "-Os"])]
+        ),
+        // Fenced-code highlighting (P0-05, ADR-007): GrammarBundle maps info
+        // strings to grammars, HighlightService parses and runs the
+        // highlights query off the main thread and caches spans by content.
+        .target(
+            name: "LipiHighlight",
+            dependencies: ["CTreeSitter", "CTreeSitterGrammars"],
+            swiftSettings: strict
+        ),
         // Rope, source buffer, parser, projection. Pure Swift values.
         .target(
             name: "LipiCore",
@@ -68,7 +97,7 @@ let package = Package(
             dependencies: ["LipiCore"],
             resources: [.copy("Fixtures")]
         ),
-        .testTarget(name: "LipiLayoutTests", dependencies: ["LipiLayout", "LipiFixtures"]),
+        .testTarget(name: "LipiLayoutTests", dependencies: ["LipiLayout", "LipiHighlight", "LipiFixtures"]),
         .testTarget(name: "LipiEditorTests", dependencies: ["LipiEditor", "LipiFixtures"]),
         .testTarget(name: "LipiAppTests", dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiLayout"]),
         // XCTest performance harness: one test per row of PRD §9.1.
@@ -78,5 +107,5 @@ let package = Package(
             resources: [.copy("Baselines")]
         ),
     ],
-    cLanguageStandard: .c99
+    cLanguageStandard: .c11
 )

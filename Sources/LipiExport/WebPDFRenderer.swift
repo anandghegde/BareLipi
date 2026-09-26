@@ -6,7 +6,8 @@ import WebKit
 /// window that is never shown; WebKit lays out and draws in its own
 /// process, so the main thread only coordinates), and WebKit's print
 /// operation breaks it into pages: text stays text, code keeps its token
-/// colours, images and MathML render, and `@page` sets the margins.
+/// colours, images and MathML render, and `@page` sets the margins. A
+/// `PageDecoration` adds the running header and footer in those margins.
 ///
 /// One renderer is one page; keep it alive until its operation finishes.
 @MainActor
@@ -58,8 +59,9 @@ public final class WebPDFRenderer: NSObject {
     }
 
     /// A print operation over the loaded page, with `printInfo`'s paper,
-    /// orientation and scaling (the margins come from the page's `@page`).
-    public func printOperation(printInfo: NSPrintInfo, title: String) -> NSPrintOperation {
+    /// orientation and scaling (the margins come from the page's `@page`),
+    /// drawing `decoration` on each page.
+    public func printOperation(printInfo: NSPrintInfo, title: String, decoration: PageDecoration? = nil) -> NSPrintOperation {
         let info = printInfo.copy() as! NSPrintInfo
         info.horizontalPagination = .fit
         info.verticalPagination = .automatic
@@ -68,6 +70,7 @@ public final class WebPDFRenderer: NSObject {
         let operation = webView.printOperation(with: info)
         operation.jobTitle = title
         operation.view?.frame = webView.bounds
+        if let decoration, let view = operation.view { PrintViewDecorator.install(decoration, on: view) }
         return operation
     }
 
@@ -83,7 +86,7 @@ public final class WebPDFRenderer: NSObject {
     }
 
     /// Paginates the loaded page into a PDF on `printInfo`'s paper.
-    public func pdfData(printInfo: NSPrintInfo, title: String) async throws -> Data {
+    public func pdfData(printInfo: NSPrintInfo, title: String, decoration: PageDecoration? = nil) async throws -> Data {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("BareLipi-print-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -91,7 +94,7 @@ public final class WebPDFRenderer: NSObject {
         let info = printInfo.copy() as! NSPrintInfo
         info.jobDisposition = .save
         info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = url
-        let operation = printOperation(printInfo: info, title: title)
+        let operation = printOperation(printInfo: info, title: title, decoration: decoration)
         operation.showsPrintPanel = false
         operation.showsProgressPanel = false
         guard await run(operation), let data = try? Data(contentsOf: url), !data.isEmpty else { throw Failure.printFailed }

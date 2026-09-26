@@ -4,8 +4,8 @@ import LipiEditor
 import LipiExport
 import LipiLayout
 
-/// A typed facade over `UserDefaults` for the Editing, Counts and Images
-/// panes. Every setter posts `AppSettings.didChange`, and open windows
+/// A typed facade over `UserDefaults` for the Editing, Counts, Images and
+/// Print panes. Every setter posts `AppSettings.didChange`, and open windows
 /// re-read what they use (`DocumentWindowController.applySettings()`).
 public struct AppSettings {
     public static let didChange = Notification.Name("BareLipi.settingsDidChange")
@@ -26,6 +26,10 @@ public struct AppSettings {
         public static let convertHEIC = "ConvertHEICToJPEG"
         public static let exportImages = "export.html.images"
         public static let exportTheme = "export.html.theme"
+        public static let pdfImages = "export.pdf.images"
+        public static let pdfTheme = "export.pdf.theme"
+        public static let pdfHeader = "export.pdf.header"
+        public static let pdfFooter = "export.pdf.footer"
     }
 
     public let defaults: UserDefaults
@@ -137,5 +141,41 @@ public struct AppSettings {
     public var exportTheme: ExportThemeMode {
         get { defaults.string(forKey: Key.exportTheme).flatMap(ExportThemeMode.init(rawValue:)) ?? .window }
         nonmutating set { store(newValue.rawValue, Key.exportTheme) }
+    }
+
+    // MARK: Print and PDF
+
+    /// What Print and PDF export do with local images; embedded by default.
+    public var pdfImages: PrintImageMode {
+        get { defaults.string(forKey: Key.pdfImages).flatMap(PrintImageMode.init(rawValue:)) ?? .embed }
+        nonmutating set { store(newValue.rawValue, Key.pdfImages) }
+    }
+
+    /// The palette Print and PDF export use; the light counterpart by default.
+    public var pdfTheme: PrintThemeMode {
+        get { defaults.string(forKey: Key.pdfTheme).flatMap(PrintThemeMode.init(rawValue:)) ?? .light }
+        nonmutating set { store(newValue.rawValue, Key.pdfTheme) }
+    }
+
+    /// The document title at the head of each printed page; on by default.
+    public var pdfHeader: Bool {
+        get { bool(Key.pdfHeader, true) }
+        nonmutating set { store(newValue, Key.pdfHeader) }
+    }
+
+    /// "Page N of M" at the foot of each printed page; on by default.
+    public var pdfFooter: Bool {
+        get { bool(Key.pdfFooter, true) }
+        nonmutating set { store(newValue, Key.pdfFooter) }
+    }
+
+    public var printOptions: PrintOptions {
+        get { PrintOptions(images: pdfImages, theme: pdfTheme, header: pdfHeader, footer: pdfFooter) }
+        nonmutating set {
+            pdfImages = newValue.images
+            pdfTheme = newValue.theme
+            pdfHeader = newValue.header
+            pdfFooter = newValue.footer
+        }
     }
 }

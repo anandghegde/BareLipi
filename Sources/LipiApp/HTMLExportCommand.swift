@@ -50,22 +50,24 @@ extension LipiDocument {
         set { AppSettings().exportTheme = newValue }
     }
 
+    /// A save panel accessory's pop-up of `titles` (title, raw value).
+    static func accessoryPopup(_ titles: [(String, String)], selected: Int, label: String) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for (title, value) in titles {
+            popup.addItem(withTitle: title)
+            popup.lastItem?.representedObject = value
+        }
+        popup.selectItem(at: selected)
+        popup.setAccessibilityLabel(label)
+        return popup
+    }
+
     /// The panel's accessory: how to treat local images, and the theme.
     static func exportAccessory() -> (view: NSView, images: NSPopUpButton, theme: NSPopUpButton) {
-        func popup(_ titles: [(String, String)], selected: Int, label: String) -> NSPopUpButton {
-            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-            for (title, value) in titles {
-                popup.addItem(withTitle: title)
-                popup.lastItem?.representedObject = value
-            }
-            popup.selectItem(at: selected)
-            popup.setAccessibilityLabel(label)
-            return popup
-        }
-        let images = popup(ImageExport.Mode.allCases.map { ($0.title, $0.rawValue) },
-                           selected: ImageExport.Mode.allCases.firstIndex(of: imageExportMode) ?? 0, label: "Images")
-        let theme = popup(ExportThemeMode.allCases.map { ($0.title, $0.rawValue) },
-                          selected: ExportThemeMode.allCases.firstIndex(of: themeExportMode) ?? 0, label: "Theme")
+        let images = accessoryPopup(ImageExport.Mode.allCases.map { ($0.title, $0.rawValue) },
+                                    selected: ImageExport.Mode.allCases.firstIndex(of: imageExportMode) ?? 0, label: "Images")
+        let theme = accessoryPopup(ExportThemeMode.allCases.map { ($0.title, $0.rawValue) },
+                                   selected: ExportThemeMode.allCases.firstIndex(of: themeExportMode) ?? 0, label: "Theme")
         let stack = NSStackView(views: [NSTextField(labelWithString: "Images:"), images,
                                         NSTextField(labelWithString: "Theme:"), theme])
         stack.orientation = .horizontal

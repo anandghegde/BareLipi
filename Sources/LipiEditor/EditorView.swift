@@ -258,15 +258,26 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         if event.keyCode == 36 || event.keyCode == 76 { key = "\r" }
         // Option can change the character on some layouts; fall back to the US key for the keyCode.
         if mods.contains(.option), let us = usKeys[event.keyCode] { key = us }
-        return keyEquivalents.first { $0.key == key && $0.modifiers == mods }
+        if let hit = activeKeyEquivalents.first(where: { $0.key == key && $0.modifiers == mods }) { return hit }
+        // Shifted punctuation ("+" for Cmd-Shift-=) is bound without Shift, as menus do.
+        guard mods.contains(.shift), !key.isEmpty, key.lowercased() == key.uppercased() else { return nil }
+        let unshifted = mods.subtracting(.shift)
+        return activeKeyEquivalents.first { $0.key == key && $0.modifiers == unshifted }
     }
+
+    /// The bindings the key handler uses: `keyEquivalents` with the user's
+    /// keymap applied. The app's `CommandRegistry` sets it whenever the
+    /// keymap changes, from the same table it builds the menu from.
+    public static var activeKeyEquivalents: [EditorKeyEquivalent] = keyEquivalents
 
     private static let usKeys: [UInt16: String] = [
         32: "u", 31: "o", 7: "x", 12: "q", 8: "c", 11: "b", 27: "-", 24: "=", 34: "i", 15: "r",
     ]
 
-    /// Every editor command with its key equivalent (§6.1.5, §6.2), for the
-    /// app's Format menu. `action` is an `@objc` method on `EditorView`.
+    /// Every editor command with its default key equivalent (§6.1.5, §6.2,
+    /// Appendix B). The app registers each one in its `CommandRegistry`,
+    /// which builds the menu and `activeKeyEquivalents` from it.
+    /// `action` is an `@objc` method on `EditorView`.
     public static let keyEquivalents: [EditorKeyEquivalent] = [
         .init("Source Mode", "/", [.command], #selector(toggleSourceMode(_:))),
         .init("Bold", "b", [.command], #selector(toggleStrong(_:))),
@@ -667,7 +678,7 @@ public struct EditorKeyEquivalent {
     public let modifiers: NSEvent.ModifierFlags
     public let action: Selector
 
-    init(_ title: String, _ key: String, _ modifiers: NSEvent.ModifierFlags, _ action: Selector) {
+    public init(_ title: String, _ key: String, _ modifiers: NSEvent.ModifierFlags, _ action: Selector) {
         self.title = title
         self.key = key
         self.modifiers = modifiers

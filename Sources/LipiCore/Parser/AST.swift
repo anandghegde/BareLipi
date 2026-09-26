@@ -20,6 +20,11 @@ public struct NodeID: Hashable, Sendable, Comparable, CustomStringConvertible {
 public struct NodeIDGenerator: Sendable {
     private var next: UInt64 = 1
     public init() {}
+    /// A generator whose first identity is `first` (concurrent region
+    /// parses each take a disjoint range).
+    init(startingAt first: UInt64) { next = first }
+    /// The identity `make()` hands out next.
+    var peek: UInt64 { next }
     public mutating func make() -> NodeID {
         defer { next += 1 }
         return NodeID(rawValue: next)

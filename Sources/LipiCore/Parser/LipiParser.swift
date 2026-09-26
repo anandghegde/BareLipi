@@ -1,4 +1,5 @@
 import CCmarkGFM
+import Dispatch
 
 /// Which cmark-gfm syntax extensions and options a parse uses.
 public struct ParserOptions: Sendable, Hashable {
@@ -132,6 +133,26 @@ public struct LipiParser: Sendable {
         index.markDirty(delta)
     }
 
+    /// Records several edits, in the order they were applied. Deltas that
+    /// run down the document without overlapping (what
+    /// `SourceBuffer.applyBatch` returns) are all valid in the coordinates
+    /// from before the first, and are recorded in one pass over the index.
+    public mutating func apply(_ deltas: [Delta]) {
+        var descending = deltas.count > 1
+        if descending {
+            for k in deltas.indices.dropFirst()
+            where deltas[k].oldRange.upperBound > deltas[k - 1].oldRange.lowerBound {
+                descending = false
+                break
+            }
+        }
+        if descending {
+            index.markDirty(ascending: deltas.reversed())
+        } else {
+            for delta in deltas { index.markDirty(delta) }
+        }
+    }
+
     /// Records an edit and immediately re-parses.
     public mutating func apply(_ delta: Delta, then rope: LipiRope) {
         apply(delta)
@@ -179,8 +200,10 @@ public struct LipiParser: Sendable {
     /// Re-parses each dirty run, back to front. Returns false when the
     /// document must be parsed as a whole instead.
     private mutating func reparseDirtyClusters(_ rope: LipiRope) -> Bool {
+        // The concurrent pass can change the entry count, so the serial
+        // loop's limit is taken after it.
+        var replaced = reparseClustersConcurrently(rope)
         var limit = index.count
-        var replaced = 0
         while let cluster = index.lastDirtyCluster(before: limit) {
             if cluster.count == 1, index.entries[cluster.lowerBound].pendingRowEdit != nil,
                reparseTableRow(cluster.lowerBound, in: rope) {
@@ -193,6 +216,103 @@ public struct LipiParser: Sendable {
         }
         stats.lastReparseEntries = replaced
         return true
+    }
+
+    /// Dirty runs at which `reparse` parses the runs' regions concurrently.
+    var concurrentClusterThreshold = 8
+
+    /// One dirty run's speculative re-parse (see `reparseClustersConcurrently`).
+    private struct Speculation: Sendable {
+        var entries: [BlockEntry]
+        var bytes: Int
+    }
+
+    /// When many runs are dirty (Replace All), parses each run with its two
+    /// clean neighbours on all cores at once and splices every run whose
+    /// neighbours came back unchanged in one pass over the index: the first
+    /// attempt of `reparseCluster`, done in parallel. Runs that need widening
+    /// stay dirty for the serial loop. Table-row edits are left to it too.
+    /// Returns the entries replaced.
+    private mutating func reparseClustersConcurrently(_ rope: LipiRope) -> Int {
+        let entries = index.entries
+        var clusters: [ClosedRange<Int>] = []
+        var i = 0
+        while i < entries.count {
+            guard entries[i].isDirty else { i += 1; continue }
+            var j = i
+            while j + 1 < entries.count && entries[j + 1].isDirty { j += 1 }
+            if !(i == j && entries[i].pendingRowEdit != nil) { clusters.append(i...j) }
+            i = j + 1
+        }
+        guard clusters.count >= concurrentClusterThreshold else { return 0 }
+
+        // Each run gets its own identity range, sized well past what its
+        // bytes can produce; a run that overflows it is discarded.
+        var bases: [UInt64] = []
+        var strides: [UInt64] = []
+        var next = ids.peek
+        for c in clusters {
+            let lo = c.lowerBound > 0 ? c.lowerBound - 1 : c.lowerBound
+            let hi = c.upperBound < index.count - 1 ? c.upperBound + 1 : c.upperBound
+            let stride = UInt64(4 * (index.end(of: hi) - index.start(of: lo)) + 64)
+            bases.append(next)
+            strides.append(stride)
+            next += stride
+        }
+        ids = NodeIDGenerator(startingAt: next)
+
+        let refs = Self.referenceList(index)
+        let snapshot = index
+        let runs = clusters, idBases = bases, idCounts = strides
+        let options = options
+        var results = [Speculation?](repeating: nil, count: clusters.count)
+        results.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let out = buffer
+            DispatchQueue.concurrentPerform(iterations: clusters.count) { k in
+                out[k] = Self.speculate(runs[k], index: snapshot, rope: rope, options: options, refs: refs,
+                                        firstID: idBases[k], idCount: idCounts[k])
+            }
+        }
+
+        var items: [(range: ClosedRange<Int>, entries: [BlockEntry])] = []
+        var replaced = 0
+        for (k, result) in results.enumerated() {
+            guard let result else { continue }
+            items.append((clusters[k], result.entries))
+            replaced += result.entries.count
+            stats.regionParses += 1
+            stats.bytesParsed += result.bytes
+        }
+        index.replace(ascending: items)
+        return replaced
+    }
+
+    /// `reparseCluster`'s first attempt at `cluster`, on a snapshot: nil when
+    /// either clean neighbour parsed differently.
+    private static func speculate(_ cluster: ClosedRange<Int>, index: BlockIndex, rope: LipiRope,
+                                  options: ParserOptions, refs: [(start: Int, definitions: [ReferenceDefinition])],
+                                  firstID: UInt64, idCount: UInt64) -> Speculation? {
+        let lo = cluster.lowerBound, hi = cluster.upperBound
+        let anchorLo: Int? = lo > 0 ? lo - 1 : nil
+        let anchorHi: Int? = hi < index.count - 1 ? hi + 1 : nil
+        let region = index.start(of: anchorLo ?? lo)..<index.end(of: anchorHi ?? hi)
+        var ids = NodeIDGenerator(startingAt: firstID)
+        var stats = ParseStats()
+        let seeds = seedReferences(outside: region, refs: refs, length: index.length)
+        guard let parsed = parseRegion(rope, region, allowFrontMatterOverflow: region.upperBound == rope.count,
+                                       options: options, seeds: seeds, ids: &ids, stats: &stats),
+              ids.peek - firstID <= idCount else { return nil }
+        if let a = anchorLo {
+            guard let first = parsed.first, matches(first, index.entries[a]) else { return nil }
+        }
+        if let b = anchorHi {
+            guard let last = parsed.last, parsed.count > (anchorLo != nil ? 1 : 0),
+                  matches(last, index.entries[b]) else { return nil }
+        }
+        var replacement = parsed
+        if anchorHi != nil { replacement.removeLast() }
+        if anchorLo != nil { replacement.removeFirst() }
+        return Speculation(entries: replacement, bytes: stats.bytesParsed)
     }
 
     /// Re-parses one dirty run with its clean neighbours, widening as needed.
@@ -220,7 +340,7 @@ public struct LipiParser: Sendable {
 
             var widened = false
             if let a = anchorLo {
-                if let first = parsed.first, matches(first, index.entries[a]) {
+                if let first = parsed.first, Self.matches(first, index.entries[a]) {
                     // keep
                 } else {
                     lo = max(a - loStep + 1, 0)
@@ -231,7 +351,7 @@ public struct LipiParser: Sendable {
             }
             if let b = anchorHi {
                 let bothAnchored = anchorLo != nil && !widened
-                if let last = parsed.last, parsed.count > (bothAnchored ? 1 : 0), matches(last, index.entries[b]) {
+                if let last = parsed.last, parsed.count > (bothAnchored ? 1 : 0), Self.matches(last, index.entries[b]) {
                     // keep
                 } else {
                     hi = min(b + hiStep - 1, index.count - 1)
@@ -344,7 +464,7 @@ public struct LipiParser: Sendable {
         return nil
     }
 
-    private func matches(_ new: BlockEntry, _ old: BlockEntry) -> Bool {
+    private static func matches(_ new: BlockEntry, _ old: BlockEntry) -> Bool {
         !old.isDirty && new.length == old.length
             && new.referenceDefinitions == old.referenceDefinitions
             && new.block.isStructurallyEqual(to: old.block)
@@ -357,6 +477,13 @@ public struct LipiParser: Sendable {
     /// caller must widen).
     private mutating func parseRegion(_ rope: LipiRope, _ range: Range<Int>,
                                       allowFrontMatterOverflow: Bool) -> [BlockEntry]? {
+        Self.parseRegion(rope, range, allowFrontMatterOverflow: allowFrontMatterOverflow, options: options,
+                         seeds: seedReferences(outside: range), ids: &ids, stats: &stats)
+    }
+
+    private static func parseRegion(_ rope: LipiRope, _ range: Range<Int>, allowFrontMatterOverflow: Bool,
+                                    options: ParserOptions, seeds: [SeedReference],
+                                    ids: inout NodeIDGenerator, stats: inout ParseStats) -> [BlockEntry]? {
         var entries: [BlockEntry] = []
         var start = range.lowerBound
         if start == 0, let fm = FrontMatter.detect(in: rope) {
@@ -374,7 +501,6 @@ public struct LipiParser: Sendable {
         stats.regionParses += 1
         stats.bytesParsed += bytes.count
 
-        let seeds = seedReferences(outside: range)
         let regionBlocks = bytes.withUnsafeBufferPointer {
             CMarkBridge.parse($0, options: options, references: seeds, ids: &ids)
         }
@@ -405,15 +531,28 @@ public struct LipiParser: Sendable {
     /// definitions win over the region's own and the region's win over later ones.
     private func seedReferences(outside range: Range<Int>) -> [SeedReference] {
         guard !index.isEmpty, range != 0..<index.length else { return [] }
+        return Self.seedReferences(outside: range, refs: Self.referenceList(index), length: index.length)
+    }
+
+    /// The entries that define references: their starts and definitions.
+    private static func referenceList(_ index: BlockIndex) -> [(start: Int, definitions: [ReferenceDefinition])] {
+        var list: [(start: Int, definitions: [ReferenceDefinition])] = []
+        for i in index.entries.indices where !index.entries[i].referenceDefinitions.isEmpty {
+            list.append((index.start(of: i), index.entries[i].referenceDefinitions))
+        }
+        return list
+    }
+
+    private static func seedReferences(outside range: Range<Int>,
+                                       refs: [(start: Int, definitions: [ReferenceDefinition])],
+                                       length: Int) -> [SeedReference] {
+        guard range != 0..<length else { return [] }
         var seeds: [SeedReference] = []
         var age: Int32 = 0
-        for i in index.entries.indices {
-            let entry = index.entries[i]
-            if entry.referenceDefinitions.isEmpty { continue }
-            let s = index.start(of: i)
+        for (s, definitions) in refs {
             if s >= range.lowerBound && s < range.upperBound { continue }
             let after = s >= range.upperBound
-            for def in entry.referenceDefinitions {
+            for def in definitions {
                 seeds.append(SeedReference(definition: def, age: after ? (1 << 30) + age : age))
                 age += 1
             }

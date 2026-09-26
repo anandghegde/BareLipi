@@ -323,7 +323,7 @@ public final class EditorController {
         let started = DispatchTime.now()
         let step = buffer.undoStep()
         guard !step.deltas.isEmpty else { return refresh(textChanged: false, started: started) }
-        for delta in step.deltas { parser.apply(delta) }
+        parser.apply(step.deltas)
         parser.reparse(buffer.rope)
         selection = restored(step.selection) ?? SelectionModel(caret: step.deltas.last!.newRange.upperBound.byte)
         lastTypingCaret = selection.head
@@ -340,7 +340,7 @@ public final class EditorController {
         let started = DispatchTime.now()
         let step = buffer.redoStep()
         guard !step.deltas.isEmpty else { return refresh(textChanged: false, started: started) }
-        for delta in step.deltas { parser.apply(delta) }
+        parser.apply(step.deltas)
         parser.reparse(buffer.rope)
         selection = restored(step.selection) ?? SelectionModel(caret: step.deltas.last!.newRange.upperBound.byte)
         lastTypingCaret = selection.head
@@ -420,11 +420,18 @@ public final class EditorController {
             return refresh(textChanged: false, started: started)
         }
         buffer.beginUndoGroup(selection: undoSelection)
-        let ordered = plan.edits.sorted {
-            $0.range.lowerBound.byte != $1.range.lowerBound.byte ? $0.range.lowerBound.byte > $1.range.lowerBound.byte
-                : $0.range.upperBound.byte > $1.range.upperBound.byte
+        // Disjoint edits (Replace All, list and table commands) go in as one
+        // batch: one pass over the rope and the block index, and an undo step
+        // that replays in one pass too.
+        if plan.edits.count > 1, let deltas = buffer.applyBatch(plan.edits) {
+            parser.apply(deltas)
+        } else {
+            let ordered = plan.edits.sorted {
+                $0.range.lowerBound.byte != $1.range.lowerBound.byte ? $0.range.lowerBound.byte > $1.range.lowerBound.byte
+                    : $0.range.upperBound.byte > $1.range.upperBound.byte
+            }
+            for edit in ordered { parser.apply(buffer.apply(edit)) }
         }
-        for edit in ordered { parser.apply(buffer.apply(edit)) }
         parser.reparse(buffer.rope)
         selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
         buffer.endUndoGroup(selection: undoSelection)

@@ -1,4 +1,5 @@
 import CCmarkGFM
+import Dispatch
 
 /// `Projection` maps `(SourceBuffer, AST, RevealSet)` to display blocks with
 /// offset maps (PRD §6.1.1, §7.4 step "Project").
@@ -66,6 +67,9 @@ public struct Projection: Sendable {
         var result = UpdateResult()
         var new: [ProjectedEntry] = []
         new.reserveCapacity(index.count)
+        // Entries to build, as (slot in `new`, index entry); built after the
+        // walk, concurrently when there are many (Replace All).
+        var pending: [(slot: Int, entry: Int)] = []
         for i in index.entries.indices {
             let entry = index.entries[i]
             let start = index.start(of: i)
@@ -88,17 +92,17 @@ public struct Projection: Sendable {
                 result.rowPatched += 1
                 continue
             }
-            let blocks = sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == index.count - 1)
-                : build(entry: entry, start: start, rope: rope, reveal: reveal)
             var rows: [Int] = []
             if !sourceMode, Self.isCaretKey(key), case .table = entry.block.kind {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
             }
-            new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: blocks,
+            new.append(ProjectedEntry(id: entry.block.id, start: start, length: entry.length, revealKey: key, blocks: [],
                                       revision: entry.revision, revealedRows: rows))
+            pending.append((new.count - 1, i))
             result.changedEntries.append(new.count - 1)
             result.rebuilt += 1
         }
+        buildPending(pending, into: &new, index: index, rope: rope, reveal: reveal)
         if new.isEmpty {
             // An empty document still has one place to put the caret.
             if let kept = entries.first, entries.count == 1, kept.length == 0, kept.id == NodeID(rawValue: 0) {
@@ -118,6 +122,46 @@ public struct Projection: Sendable {
         length = index.length
         self.reveal = reveal
         return result
+    }
+
+    /// Entries built at which `update` builds them on all cores (tests lower
+    /// or raise it to compare the two paths).
+    var concurrentBuildThreshold = 256
+
+    /// Builds the display blocks of the `pending` entries into their slots.
+    /// Building an entry reads only the entry, its bytes and the preset, so
+    /// many of them build in parallel.
+    private func buildPending(_ pending: [(slot: Int, entry: Int)], into new: inout [ProjectedEntry],
+                              index: BlockIndex, rope: LipiRope, reveal: RevealSet) {
+        let last = index.count - 1
+        func blocks(_ i: Int) -> [DisplayBlock] {
+            let entry = index.entries[i]
+            let start = index.start(of: i)
+            return sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == last)
+                : build(entry: entry, start: start, rope: rope, reveal: reveal)
+        }
+        guard pending.count >= concurrentBuildThreshold else {
+            for p in pending { new[p.slot].blocks = blocks(p.entry) }
+            return
+        }
+        let me = self
+        var built = [[DisplayBlock]](repeating: [], count: pending.count)
+        built.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let out = buffer
+            // Chunks of entries per task keep the dispatch overhead small.
+            let chunk = 32
+            DispatchQueue.concurrentPerform(iterations: (pending.count + chunk - 1) / chunk) { c in
+                for k in (c * chunk)..<min(pending.count, (c + 1) * chunk) {
+                    let i = pending[k].entry
+                    let entry = index.entries[i]
+                    let start = index.start(of: i)
+                    out[k] = me.sourceMode
+                        ? me.buildSource(entry: entry, start: start, rope: rope, isLast: i == last)
+                        : me.build(entry: entry, start: start, rope: rope, reveal: reveal)
+                }
+            }
+        }
+        for (k, p) in pending.enumerated() { new[p.slot].blocks = built[k] }
     }
 
     /// A reveal key that stands for a caret's reveal set (not "nothing" or "everything").

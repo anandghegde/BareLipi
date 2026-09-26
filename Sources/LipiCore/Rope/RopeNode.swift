@@ -1,3 +1,5 @@
+import Dispatch
+
 /// Immutable B-tree node. Persistence comes for free: every edit path-copies
 /// the O(log n) nodes it touches and shares the rest, so a snapshot of the
 /// rope handed to a background parse is just a retained root pointer.
@@ -72,13 +74,13 @@ final class RopeNode: @unchecked Sendable {
     /// Builds a balanced tree from text by chunking at scalar boundaries.
     static func build(from text: Substring) -> RopeNode {
         if text.utf8.count <= maxLeaf { return RopeNode(leaf: String(text)) }
-        var leaves: [RopeNode] = []
-        leaves.reserveCapacity(text.utf8.count / bulkLeaf + 2)
+        var pieces: [Substring] = []
+        pieces.reserveCapacity(text.utf8.count / bulkLeaf + 2)
         var rest = text
         while true {
             let n = rest.utf8.count
             if n <= maxLeaf {
-                leaves.append(RopeNode(leaf: String(rest)))
+                pieces.append(rest)
                 break
             }
             // Fill to 3/4 so the first edits into a chunk rarely split it, but
@@ -87,11 +89,26 @@ final class RopeNode: @unchecked Sendable {
                 ? scalarBoundary(in: rest, atOrBefore: bulkLeaf)
                 : splitPoint(for: rest)
             let idx = rest.utf8.index(rest.utf8.startIndex, offsetBy: cut)
-            leaves.append(RopeNode(leaf: String(rest[..<idx])))
+            pieces.append(rest[..<idx])
             rest = rest[idx...]
         }
-        return fromNodes(leaves)
+        // Measuring the leaves is most of the cost; a large text (opening a
+        // big file, a Replace All) measures them on all cores.
+        guard pieces.count >= concurrentLeaves else { return fromNodes(pieces.map { RopeNode(leaf: String($0)) }) }
+        let slices = pieces
+        var leaves = [RopeNode?](repeating: nil, count: pieces.count)
+        leaves.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let out = buffer
+            let chunk = 256
+            DispatchQueue.concurrentPerform(iterations: (pieces.count + chunk - 1) / chunk) { c in
+                for k in (c * chunk)..<min(slices.count, (c + 1) * chunk) { out[k] = RopeNode(leaf: String(slices[k])) }
+            }
+        }
+        return fromNodes(leaves.map { $0! })
     }
+
+    /// Leaves at which `build` measures them concurrently (about 1.5 MB).
+    static let concurrentLeaves = 2048
 
     /// Packs same-height nodes into a tree, level by level.
     static func fromNodes(_ nodes: [RopeNode]) -> RopeNode {

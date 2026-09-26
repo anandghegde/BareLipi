@@ -159,6 +159,79 @@ public struct BlockIndex: Sendable {
         rebuildStarts(from: i)
     }
 
+    /// Records many edits in one pass over the entries, with the same result
+    /// as `markDirty` once per delta. `deltas` are disjoint and ascending,
+    /// all in the coordinates from before any of them (the reverse of what
+    /// `SourceBuffer.applyBatch` returns).
+    mutating func markDirty(ascending deltas: [Delta]) {
+        guard !entries.isEmpty, !needsFullParse else {
+            needsFullParse = true
+            return
+        }
+        var out: [BlockEntry] = []
+        out.reserveCapacity(entries.count)
+        var next = 0          // first entry not yet copied or merged
+        for delta in deltas {
+            let old = delta.oldRange.byteRange
+            let new = delta.newRange.byteRange
+            guard let i = entryIndex(containing: old.lowerBound),
+                  let j = entryIndex(containing: max(old.lowerBound, old.upperBound - 1)) else {
+                needsFullParse = true
+                return
+            }
+            if i < next {
+                // Lands in the entry the previous delta merged into.
+                var merged = out.removeLast()
+                merged.pendingRowEdit = nil
+                merged.length += new.count - old.count
+                while next <= j {
+                    merged.length += entries[next].length
+                    merged.referenceDefinitions += entries[next].referenceDefinitions
+                    next += 1
+                }
+                guard merged.length >= 0 else { needsFullParse = true; return }
+                out.append(merged)
+                continue
+            }
+            out.append(contentsOf: entries[next..<i])
+            var merged = entries[i]
+            merged.pendingRowEdit = !merged.isDirty && i == j
+                ? Self.rowEdit(in: merged, oldRange: (old.lowerBound - starts[i])..<(old.upperBound - starts[i]),
+                               newCount: new.count)
+                : nil
+            merged.tableRowEdit = nil
+            merged.isDirty = true
+            merged.hasBracket = true
+            merged.length = end(of: j) - starts[i] - old.count + new.count
+            guard merged.length >= 0 else { needsFullParse = true; return }
+            if j > i {
+                for k in (i + 1)...j { merged.referenceDefinitions += entries[k].referenceDefinitions }
+            }
+            out.append(merged)
+            next = j + 1
+        }
+        out.append(contentsOf: entries[next...])
+        entries = out
+        rebuildStarts()
+    }
+
+    /// Splices several re-parsed runs in one pass: each item replaces the
+    /// entries in its range. Ranges are ascending and disjoint.
+    mutating func replace(ascending items: [(range: ClosedRange<Int>, entries: [BlockEntry])]) {
+        guard !items.isEmpty else { return }
+        var out: [BlockEntry] = []
+        out.reserveCapacity(entries.count)
+        var next = 0
+        for item in items {
+            out.append(contentsOf: entries[next..<item.range.lowerBound])
+            out.append(contentsOf: item.entries)
+            next = item.range.upperBound + 1
+        }
+        out.append(contentsOf: entries[next...])
+        entries = out
+        rebuildStarts()
+    }
+
     /// The row edit `oldRange → newCount bytes` makes in `entry`, when the
     /// entry is a top-level table and the replaced bytes lie inside one body row.
     private static func rowEdit(in entry: BlockEntry, oldRange: Range<Int>, newCount: Int) -> PendingRowEdit? {

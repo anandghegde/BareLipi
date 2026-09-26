@@ -120,6 +120,33 @@ public struct LipiRope: Sendable {
         root = RopeNode.concat(root, RopeNode.build(from: text[...]))
     }
 
+    /// Applies several edits in one pass. `edits` must be sorted by position,
+    /// must not overlap, and are all expressed in this rope's coordinates
+    /// (an insertion may sit at the end of the edit before it). Returns the
+    /// text each edit removed, in the same order. Cheaper than applying the
+    /// edits one at a time once there are more than a few hundred of them.
+    public mutating func applyBatch(_ edits: [Edit]) -> [String] {
+        var removed: [String] = []
+        removed.reserveCapacity(edits.count)
+        var inserted = 0
+        for e in edits { inserted += e.insertedBytes - e.range.byteRange.count }
+        var s = ""
+        s.reserveCapacity(Swift.max(0, count + inserted))
+        var cursor = 0
+        for e in edits {
+            let r = e.range.byteRange
+            precondition(r.lowerBound >= cursor && r.upperBound <= count, "batch edits must be sorted and disjoint")
+            precondition(isScalarBoundary(at: r.lowerBound) && isScalarBoundary(at: r.upperBound), "edit splits a scalar")
+            if r.lowerBound > cursor { root.forEachLeaf(in: cursor..<r.lowerBound) { s.append(contentsOf: $0) } }
+            removed.append(r.isEmpty ? "" : string(in: r))
+            s.append(e.replacement)
+            cursor = r.upperBound
+        }
+        if cursor < count { root.forEachLeaf(in: cursor..<count) { s.append(contentsOf: $0) } }
+        root = RopeNode.build(from: s[...])
+        return removed
+    }
+
     public static func + (lhs: LipiRope, rhs: LipiRope) -> LipiRope {
         LipiRope(root: RopeNode.concat(lhs.root, rhs.root))
     }

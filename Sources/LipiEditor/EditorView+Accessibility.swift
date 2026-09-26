@@ -172,6 +172,11 @@ extension EditorView {
                 out.addAttribute(.accessibilityFont, value: Self.fontAttributes(style: style, inline: []), range: local)
                 if let heading { out.addAttribute(.accessibilityHeadingLevel, value: heading, range: local) }
                 if case .code = block.role { out.addAttribute(.accessibilityCode, value: true, range: local) }
+                if let warning = block.context.warning {
+                    // Malformed front matter: VoiceOver reads the problem.
+                    out.addAttribute(.accessibilityAnnotationTextAttribute,
+                                     value: [[NSAccessibility.AnnotationAttributeKey.label.rawValue: warning]], range: local)
+                }
             }
             for run in cell.runs {
                 let r = NSRange(location: unit.start + run.range.lowerBound, length: run.range.count)

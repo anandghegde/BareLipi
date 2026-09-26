@@ -25,23 +25,20 @@ public enum AssetPolicy {
         case original
     }
 
-    /// The front matter value of `key` (YAML `key: value` at the top
-    /// level of a leading `---` block), unquoted; nil when absent or empty.
+    /// The front matter value of `key` (`assets`, `typora-copy-images-to`,
+    /// `typora-root-url`, `title`, `lang`) as parsed by `FrontMatterData`
+    /// (YAML or TOML); nil when absent, empty, or the front matter is
+    /// malformed.
     public static func frontMatterValue(_ key: String, in text: String) -> String? {
-        var lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" }).makeIterator()
-        guard let first = lines.next(), first.trimmingCharacters(in: .whitespacesAndNewlines) == "---" else { return nil }
-        while let raw = lines.next() {
-            let line = raw.hasSuffix("\r") ? raw.dropLast() : raw
-            if line == "---" || line == "..." { return nil }
-            guard line.hasPrefix(key), let colon = line.firstIndex(of: ":"),
-                  line[line.startIndex..<colon].trimmingCharacters(in: .whitespaces) == key else { continue }
-            var value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, let q = value.first, q == "\"" || q == "'", value.last == q {
-                value = String(value.dropFirst().dropLast())
-            }
-            return value.isEmpty ? nil : value
+        guard let data = FrontMatterData.parse(document: text), !data.isMalformed else { return nil }
+        switch key {
+        case "assets": return data.assets
+        case "typora-copy-images-to": return data.typoraCopyImagesTo
+        case "typora-root-url": return data.typoraRootURL
+        case "title": return data.title
+        case "lang": return data.lang
+        default: return nil
         }
-        return nil
     }
 
     /// The folder images for a document at `documentURL` go to.

@@ -98,6 +98,9 @@ public struct Projection: Sendable {
     public var preset: RevealPreset
     /// Source mode (§6.2): entries are shown byte for byte (`SourceProjection.swift`).
     public var sourceMode = false
+    /// Set when the front matter does not parse (`FrontMatterData.error`):
+    /// the block is shown as source with this warning (§6.13).
+    public var frontMatterWarning: String? = nil
     public private(set) var entries: [ProjectedEntry] = []
     public private(set) var reveal = RevealSet()
     /// Bytes covered; equals the document length after `update`.
@@ -223,7 +226,9 @@ public struct Projection: Sendable {
         for i in index.entries.indices {
             let entry = index.entries[i]
             let start = index.start(of: i)
-            let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1) : revealKey(for: entry.block.id, reveal: reveal)
+            let malformed = i == 0 && !sourceMode && frontMatterWarning != nil && entry.block.kind.isFrontMatter
+            let key = sourceMode ? sourceRevealKey(isLast: i == index.count - 1)
+                : malformed ? Self.warningKey(frontMatterWarning!) : revealKey(for: entry.block.id, reveal: reveal)
             let note = notes.isEmpty ? nil : notes[i]
             let noteKey = note?.key ?? 0
             if !entry.isDirty, let j = old[entry.block.id], entries[j].length == entry.length, entries[j].revealKey == key,
@@ -248,8 +253,8 @@ public struct Projection: Sendable {
                 continue
             }
             let blocks = sourceMode ? buildSource(entry: entry, start: start, rope: rope, isLast: i == index.count - 1)
-                : build(entry: entry, start: start, rope: rope, reveal: reveal, footnotes: numbering,
-                        regionStart: note?.regionStart ?? false)
+                : build(entry: entry, start: start, rope: rope, reveal: malformed ? .everything : reveal, footnotes: numbering,
+                        regionStart: note?.regionStart ?? false, warning: malformed ? frontMatterWarning : nil)
             var rows: [Int] = []
             if !sourceMode, Self.isCaretKey(key), case .table = entry.block.kind {
                 rows = Self.revealedRows(of: entry.block, reveal: reveal, entryStart: start)
@@ -281,6 +286,14 @@ public struct Projection: Sendable {
         return result
     }
 
+    /// The reveal key of malformed front matter (always revealed; rebuilt
+    /// when the warning changes).
+    private static func warningKey(_ warning: String) -> Int {
+        var h = Hasher()
+        h.combine(warning)
+        return h.finalize() | 2
+    }
+
     /// A reveal key that stands for a caret's reveal set (not "nothing" or "everything").
     private static func isCaretKey(_ key: Int) -> Bool { key != 0 && key != 1 }
 
@@ -301,12 +314,14 @@ public struct Projection: Sendable {
     }
 
     private func build(entry: BlockEntry, start: Int, rope: LipiRope, reveal: RevealSet,
-                       footnotes: FootnoteNumbering = FootnoteNumbering(), regionStart: Bool = false) -> [DisplayBlock] {
+                       footnotes: FootnoteNumbering = FootnoteNumbering(), regionStart: Bool = false,
+                       warning: String? = nil) -> [DisplayBlock] {
         var text = rope.string(in: start..<(start + entry.length))
         return text.withUTF8 { bytes in
             var projector = EntryProjector(bytes: bytes, entryStart: start, preset: preset, reveal: reveal)
             projector.footnotes = footnotes
             projector.footnoteRegionStart = regionStart
+            projector.warning = warning
             return projector.project(entry.block, spanLength: entry.length)
         }
     }
@@ -446,6 +461,8 @@ struct EntryProjector {
     var footnotes = FootnoteNumbering()
     /// The entry is a top-level definition starting a footnotes region.
     var footnoteRegionStart = false
+    /// Shown beside the entry's front matter block (it did not parse).
+    var warning: String? = nil
 
     init(bytes: UnsafeBufferPointer<UInt8>, entryStart: Int, preset: RevealPreset, reveal: RevealSet) {
         self.bytes = bytes
@@ -603,6 +620,7 @@ struct EntryProjector {
     }
 
     private mutating func emitLeaf(_ block: Block, context: BlockContext, revealed: Bool, firstLeafContainer: Block?) {
+        var context = context
         let r = block.range
         var builder = CellBuilder(bytes: bytes, start: cursor)
         var role: BlockRole = .paragraph
@@ -660,6 +678,7 @@ struct EntryProjector {
             if revealed { builder.copy(r, .syntax) } else { builder.hide(r, .before) }
         case .frontMatter(let kind):
             role = .frontMatter
+            context.warning = warning
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
             emitFrontMatter(r, kind: kind, &builder, revealed: revealed)
         case .linkReferenceDefinition:

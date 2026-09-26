@@ -21,6 +21,10 @@ public struct OutlineItem: Sendable, Hashable {
 /// parser, so they never appear. Titles are cached per block identity.
 public struct Outline: Sendable {
     public private(set) var items: [OutlineItem] = []
+    /// The document title: the front matter `title` (§6.13), nil when there
+    /// is none or the front matter is malformed.
+    public private(set) var title: String?
+    private var titleKey: (id: NodeID, revision: UInt32, length: Int)?
     private var titles: [NodeID: (revision: UInt32, title: String, slug: String)] = [:]
 
     public init() {}
@@ -33,6 +37,8 @@ public struct Outline: Sendable {
     /// (not just offsets), so a view can skip reloading rows.
     @discardableResult
     public mutating func update(index: BlockIndex, rope: LipiRope) -> Bool {
+        let oldTitle = title
+        updateTitle(index: index, rope: rope)
         var next: [OutlineItem] = []
         var seen: [String: Int] = [:]
         next.reserveCapacity(items.count)
@@ -76,9 +82,22 @@ public struct Outline: Sendable {
             let live = Set(next.map(\.id))
             titles = titles.filter { live.contains($0.key) }
         }
-        let changed = next.count != items.count || zip(next, items).contains { $0.title != $1.title || $0.level != $1.level }
+        let changed = title != oldTitle || next.count != items.count
+            || zip(next, items).contains { $0.title != $1.title || $0.level != $1.level }
         items = next
         return changed
+    }
+
+    private mutating func updateTitle(index: BlockIndex, rope: LipiRope) {
+        guard let first = index.entries.first, first.block.kind.isFrontMatter else {
+            title = nil
+            titleKey = nil
+            return
+        }
+        if let k = titleKey, k.id == first.block.id, k.revision == first.revision, k.length == first.length, !first.isDirty { return }
+        titleKey = (first.block.id, first.revision, first.length)
+        let data = FrontMatterData.parse(index: index, rope: rope)
+        title = data?.isMalformed == false ? data?.title : nil
     }
 
     /// Index of the heading whose section holds `offset`: the last heading

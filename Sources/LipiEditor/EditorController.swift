@@ -27,7 +27,7 @@ public final class EditorController {
     public private(set) var buffer: SourceBuffer
     private var parser: LipiParser
     public let policy: RevealPolicy
-    public private(set) var projection: Projection
+    public internal(set) var projection: Projection
     public private(set) var typesetter: Typesetter
     public private(set) var renderer: Renderer
     /// Block layout (ADR-002). Present in both modes: it owns the measure and
@@ -38,6 +38,9 @@ public final class EditorController {
     public private(set) var selection: SelectionModel
     public private(set) var marked: MarkedText?
     public private(set) var stats = Stats()
+    /// The parsed front matter (§6.13); nil when the document has none.
+    public internal(set) var frontMatter: FrontMatterData?
+    var frontMatterKey: (id: NodeID, revision: UInt32, length: Int)?
     /// Called after every pipeline run.
     public var onChange: ((EditorChange) -> Void)?
     /// Called when something outside the pipeline changed how the document
@@ -651,6 +654,7 @@ public final class EditorController {
         }
         // Where the caret would land under the current (pre-reveal) layout.
         let expected = pinned.map(\.rect) ?? (textChanged ? nil : caretRect(forSource: selection.head))
+        if textChanged { updateFrontMatter() }
         let result = projection.update(index: parser.index, rope: buffer.rope, reveal: reveal)
         let structure: Bool
         switch engine {

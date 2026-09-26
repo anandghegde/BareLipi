@@ -121,6 +121,8 @@ public struct BlockContext: Sendable, Hashable {
     public var footnoteRegionStart = false
     /// Any container this block sits in is loose (paragraph spacing applies).
     public var isLoose: Bool = false
+    /// A problem shown beside the block (malformed front matter, §6.13).
+    public var warning: String? = nil
     public init() {}
 }
 

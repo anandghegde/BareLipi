@@ -204,6 +204,7 @@ final class AccessibilityModel {
             projection = Projection(preset: preset)
             projection.sourceMode = sourceMode
         }
+        projection.frontMatterWarning = controller.projection.frontMatterWarning
         projection.update(index: controller.blockIndex, rope: controller.rope, reveal: sourceMode ? .everything : RevealSet())
         let text = AccessibilityText(projection: projection)
         cached = (generation, sourceMode, preset, text)

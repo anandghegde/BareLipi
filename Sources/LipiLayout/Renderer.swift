@@ -122,7 +122,10 @@ public struct Renderer {
     /// Markers hang in the gutter, right-aligned to the text column (§8.2).
     func drawGutter(_ block: BlockLayout, box: CGRect, layout: DocumentLayout, in ctx: CGContext) {
         var marker: String? = nil
-        if let m = block.context.marker {
+        if block.context.warning != nil {
+            // Front matter that did not parse (§6.13).
+            marker = Self.warningMarker
+        } else if let m = block.context.marker {
             switch m.task {
             case .some(let task): marker = task == .checked ? "☑" : "☐"
             case .none: marker = m.isOrdered ? m.literal : "•"
@@ -148,6 +151,9 @@ public struct Renderer {
         ctx.textPosition = CGPoint(x: box.minX - width - 8, y: box.minY + block.cellFrame(0).minY + first.baseline)
         CTLineDraw(line, ctx)
     }
+
+    /// The gutter text of a block with a warning (malformed front matter).
+    public static let warningMarker = "\u{26A0}\u{FE0E}"
 
     /// The gutter text of a footnote definition: `↩ 2.` (the arrow is the
     /// return link to the first reference).

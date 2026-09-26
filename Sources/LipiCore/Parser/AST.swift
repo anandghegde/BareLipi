@@ -87,6 +87,10 @@ public enum BlockKind: Sendable, Hashable {
         default: return false
         }
     }
+    public var isFrontMatter: Bool {
+        if case .frontMatter = self { return true }
+        return false
+    }
 }
 
 public enum InlineKind: Sendable, Hashable {

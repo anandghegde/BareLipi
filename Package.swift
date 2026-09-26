@@ -1,11 +1,15 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+let strict: [SwiftSetting] = [.enableUpcomingFeature("StrictConcurrency")]
+
 let package = Package(
     name: "BareLipi",
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "LipiCore", targets: ["LipiCore"]),
+        .library(name: "LipiLayout", targets: ["LipiLayout"]),
+        .library(name: "LipiEditor", targets: ["LipiEditor"]),
         .executable(name: "BareLipi", targets: ["BareLipi"]),
     ],
     targets: [
@@ -19,21 +23,48 @@ let package = Package(
                 .headerSearchPath("extensions"),
             ]
         ),
+        // Rope, source buffer, parser, projection. Pure Swift values.
         .target(
             name: "LipiCore",
             dependencies: ["CCmarkGFM"],
-            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+            swiftSettings: strict
         ),
+        // Core Text block layout (ADR-002): font cascade, type scale,
+        // typesetter, block/table layout, layout cache, height tree, and the
+        // headless TextKit 2 comparison used by the layout spike.
+        .target(
+            name: "LipiLayout",
+            dependencies: ["LipiCore"],
+            swiftSettings: strict
+        ),
+        // AppKit editor: EditorView (NSTextInputClient, accessibility),
+        // EditorController (the §7.4 keystroke pipeline), caret and selection.
+        .target(
+            name: "LipiEditor",
+            dependencies: ["LipiCore", "LipiLayout"],
+            swiftSettings: strict
+        ),
+        // Deterministic generators for the §9.1 fixture set.
+        .target(name: "LipiFixtures", swiftSettings: strict),
         .executableTarget(
             name: "BareLipi",
-            dependencies: ["LipiCore"],
-            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"],
+            swiftSettings: strict
         ),
-        .executableTarget(name: "lipi-bench", dependencies: ["LipiCore"]),
+        .executableTarget(name: "lipi-bench", dependencies: ["LipiCore", "LipiLayout", "LipiFixtures"]),
+        .executableTarget(name: "lipi-fixtures", dependencies: ["LipiFixtures"]),
         .testTarget(
             name: "LipiCoreTests",
             dependencies: ["LipiCore"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(name: "LipiLayoutTests", dependencies: ["LipiLayout", "LipiFixtures"]),
+        .testTarget(name: "LipiEditorTests", dependencies: ["LipiEditor", "LipiFixtures"]),
+        // XCTest performance harness: one test per row of PRD §9.1.
+        .testTarget(
+            name: "LipiPerfTests",
+            dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"],
+            resources: [.copy("Baselines")]
         ),
     ],
     cLanguageStandard: .c99

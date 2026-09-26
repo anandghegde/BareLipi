@@ -1,0 +1,297 @@
+import CoreGraphics
+import Foundation
+import LipiCore
+
+/// The layout of one projected entry: its blocks stacked with their spacing.
+public final class EntryLayout {
+    public let id: NodeID
+    public let blocks: [BlockLayout]
+    /// y of each block's box within the entry (spacing before applied).
+    public let blockTops: [CGFloat]
+    public let height: CGFloat
+
+    init(id: NodeID, blocks: [BlockLayout], blockTops: [CGFloat], height: CGFloat) {
+        self.id = id
+        self.blocks = blocks
+        self.blockTops = blockTops
+        self.height = height
+    }
+
+    /// Index of the block containing local `y` (clamped).
+    public func blockIndex(atY y: CGFloat) -> Int {
+        var i = 0
+        while i + 1 < blocks.count, y >= blockTops[i + 1] { i += 1 }
+        return i
+    }
+}
+
+public struct PlacedEntry {
+    public let index: Int
+    /// Document y of the entry's top.
+    public let y: CGFloat
+    public let layout: EntryLayout
+}
+
+/// Lays out a `Projection` lazily: entries get an estimated height until they
+/// are first needed, the visible ones are laid out through `LayoutCache`,
+/// and a `HeightTree` keeps every entry's y (ADR-002, §7.4 step 7).
+public final class DocumentLayout {
+    public struct Stats: Sendable, Equatable {
+        public var entriesLaidOut = 0
+        public var blocksLaidOut = 0
+        public var blocksFromCache = 0
+    }
+
+    public private(set) var typesetter: Typesetter
+    public let cache: LayoutCache
+    public private(set) var themeRevision: UInt32 = 0
+    public private(set) var projection = Projection()
+    public private(set) var viewportWidth: CGFloat = 0
+    /// Width of the text column (§8.2: 72 × advance of zero, 320–720 pt).
+    public private(set) var measure: CGFloat = 0
+    /// x of the text column's leading edge (side margin + gutter, centred).
+    public private(set) var textOrigin: CGFloat = 0
+    /// Width available to tables and code blocks: editor width minus margins.
+    public private(set) var wideWidth: CGFloat = 0
+    public private(set) var zeroAdvance: CGFloat = 0
+    /// Extra space below the last entry (§6.1.6: up to one viewport).
+    public var bottomPadding: CGFloat = 0
+    /// Entry holding the caret when it sits in a table: its columns never shrink.
+    public var growOnlyEntry: Int? = nil
+    public private(set) var stats = Stats()
+
+    private var layouts: [EntryLayout?] = []
+    private var tree = HeightTree()
+    /// Layouts of entries replaced by the last `update`, kept for one round
+    /// so tables can re-layout incrementally from them.
+    private var stale: [Int: EntryLayout] = [:]
+
+    public init(typesetter: Typesetter, cache: LayoutCache = LayoutCache(), viewportWidth: CGFloat = 800) {
+        self.typesetter = typesetter
+        self.cache = cache
+        zeroAdvance = typesetter.cascade.zeroAdvance(size: typesetter.scale.style(for: .body).size)
+        setViewportWidth(viewportWidth)
+    }
+
+    public var entryCount: Int { tree.count }
+    public var scale: TypeScale { typesetter.scale }
+
+    /// Total height: every entry's measured or estimated height plus padding.
+    public var contentHeight: CGFloat { CGFloat(tree.total) + bottomPadding }
+
+    // MARK: Configuration
+
+    public func setViewportWidth(_ width: CGFloat) {
+        let metrics = scale.theme.metrics
+        viewportWidth = width
+        let natural = min(max(CGFloat(metrics.measure) * zeroAdvance, metrics.minMeasure), metrics.maxMeasure).rounded()
+        let available = width - 2 * scale.sideMargin - scale.gutter
+        let newMeasure = max(120, min(natural, available.rounded()))
+        let newOrigin = (scale.sideMargin + scale.gutter + max(0, (available - newMeasure) / 2)).rounded()
+        let newWide = max(newMeasure, (width - newOrigin - scale.sideMargin).rounded())
+        guard newMeasure != measure || newOrigin != textOrigin || newWide != wideWidth else { return }
+        let widthChanged = newMeasure != measure || newWide != wideWidth
+        measure = newMeasure
+        textOrigin = newOrigin
+        wideWidth = newWide
+        if widthChanged { invalidateAllLayouts() }
+    }
+
+    public func setTypesetter(_ typesetter: Typesetter) {
+        self.typesetter = typesetter
+        themeRevision &+= 1
+        zeroAdvance = typesetter.cascade.zeroAdvance(size: typesetter.scale.style(for: .body).size)
+        cache.removeAll()
+        let width = viewportWidth
+        viewportWidth = -1
+        setViewportWidth(width)
+        invalidateAllLayouts()
+    }
+
+    /// Forgets every entry layout but keeps the measured heights as estimates
+    /// (a width change: everything is re-laid out lazily, §7.4).
+    public func invalidateAllLayouts() {
+        for i in layouts.indices { layouts[i] = nil }
+        stale.removeAll()
+    }
+
+    // MARK: Projection updates
+
+    /// Adopts a new projection. Entries the projection reused keep their
+    /// layout; changed entries keep their old height as the estimate until
+    /// they are laid out again.
+    public func update(projection new: Projection, result: Projection.UpdateResult) {
+        let old = projection
+        var oldByID: [NodeID: Int] = [:]
+        oldByID.reserveCapacity(old.entries.count)
+        for (i, entry) in old.entries.enumerated() { oldByID[entry.id] = i }
+        let changed = Set(result.changedEntries)
+        let sameShape = new.entries.count == old.entries.count
+        var newLayouts: [EntryLayout?] = []
+        var heights: [Double] = []
+        newLayouts.reserveCapacity(new.entries.count)
+        heights.reserveCapacity(new.entries.count)
+        stale.removeAll()
+        for (i, entry) in new.entries.enumerated() {
+            if !changed.contains(i), let j = oldByID[entry.id] {
+                newLayouts.append(layouts[j])
+                heights.append(tree.height(at: j))
+            } else if let j = oldByID[entry.id] ?? (sameShape && i < old.entries.count ? i : nil), j < old.entries.count {
+                if let previous = layouts[j] { stale[i] = previous }
+                newLayouts.append(nil)
+                heights.append(tree.height(at: j))
+            } else {
+                newLayouts.append(nil)
+                heights.append(Double(estimatedHeight(of: entry)))
+            }
+        }
+        projection = new
+        layouts = newLayouts
+        if heights.count == tree.count {
+            for (i, h) in heights.enumerated() { tree.update(i, height: h) }
+        } else {
+            tree.replace(with: heights)
+        }
+    }
+
+    func estimatedHeight(of entry: ProjectedEntry) -> CGFloat {
+        entry.blocks.reduce(0) { sum, block in
+            let style = scale.style(for: typesetter.role(of: block, cellIndex: 0))
+            return sum + style.spacingBefore + style.spacingAfter
+                + LayoutEngine.estimatedHeight(of: block, typesetter: typesetter, measure: measure, zeroAdvance: zeroAdvance)
+        }
+    }
+
+    // MARK: Layout
+
+    public func y(ofEntry i: Int) -> CGFloat { CGFloat(tree.y(of: i)) }
+    public func height(ofEntry i: Int) -> CGFloat { CGFloat(tree.height(at: i)) }
+    public func entryIndex(atY y: CGFloat) -> Int? { tree.index(at: Double(y)) }
+    public func isLaidOut(_ i: Int) -> Bool { layouts[i] != nil }
+
+    /// The layout of entry `i`, made now if needed.
+    @discardableResult
+    public func ensureLayout(_ i: Int) -> EntryLayout {
+        if let layout = layouts[i] { return layout }
+        let entry = projection.entries[i]
+        let previous = stale.removeValue(forKey: i)
+        var blocks: [BlockLayout] = []
+        var tops: [CGFloat] = []
+        blocks.reserveCapacity(entry.blocks.count)
+        var y: CGFloat = 0
+        for (b, block) in entry.blocks.enumerated() {
+            let isWide: Bool = {
+                switch block.role {
+                case .code, .table, .html: return true
+                default: return false
+                }
+            }()
+            let key = LayoutKey(layoutKey: block.layoutKey, width: isWide ? max(measure, wideWidth) : measure, themeRevision: themeRevision)
+            let layout: BlockLayout
+            if let cached = cache.layout(for: key) {
+                layout = cached
+                stats.blocksFromCache += 1
+            } else {
+                var prior = cache.previousLayout(of: block.id)
+                if prior == nil, let previous, b < previous.blocks.count, previous.blocks[b].table != nil, block.table != nil {
+                    prior = previous.blocks[b]
+                }
+                layout = LayoutEngine.layout(block, typesetter: typesetter, measure: measure, wideWidth: wideWidth,
+                                             previous: prior, growOnly: growOnlyEntry == i)
+                cache.insert(layout, for: key)
+                stats.blocksLaidOut += 1
+            }
+            if i > 0 || b > 0 { y += layout.spacingBefore }
+            tops.append(y)
+            y += layout.height + layout.spacingAfter
+            blocks.append(layout)
+        }
+        let layout = EntryLayout(id: entry.id, blocks: blocks, blockTops: tops, height: y)
+        layouts[i] = layout
+        tree.update(i, height: Double(y))
+        stats.entriesLaidOut += 1
+        return layout
+    }
+
+    /// Lays out every entry intersecting `range` (document y) and returns
+    /// them placed. Heights measured here move the entries after them.
+    public func layoutIfNeeded(in range: ClosedRange<CGFloat>) -> [PlacedEntry] {
+        guard tree.count > 0 else { return [] }
+        var i = tree.index(at: Double(range.lowerBound)) ?? 0
+        var result: [PlacedEntry] = []
+        while i < tree.count {
+            let y = CGFloat(tree.y(of: i))
+            if y > range.upperBound { break }
+            let layout = ensureLayout(i)
+            result.append(PlacedEntry(index: i, y: y, layout: layout))
+            i += 1
+        }
+        return result
+    }
+
+    /// Lays out the whole document (benchmarks, scroll-to-end measurement).
+    public func layoutAll() {
+        for i in 0..<tree.count { ensureLayout(i) }
+    }
+
+    /// Placed layout of one entry.
+    public func placed(_ i: Int) -> PlacedEntry {
+        PlacedEntry(index: i, y: CGFloat(tree.y(of: i)), layout: ensureLayout(i))
+    }
+
+    // MARK: Geometry
+
+    /// Document x of a block's leading edge.
+    public func x(of block: BlockLayout) -> CGFloat { textOrigin + block.indent }
+
+    /// Frame of the cell at `position` in document coordinates.
+    public func cellFrame(at position: DisplayPosition) -> CGRect {
+        let entry = ensureLayout(position.entry)
+        let block = entry.blocks[position.block]
+        var frame = block.cellFrames[position.cell]
+        frame.origin.x += x(of: block)
+        frame.origin.y += CGFloat(tree.y(of: position.entry)) + entry.blockTops[position.block]
+        return frame
+    }
+
+    public func cell(at position: DisplayPosition) -> CellLayout {
+        ensureLayout(position.entry).blocks[position.block].cells[position.cell]
+    }
+
+    /// Caret rect for a display position, in document coordinates.
+    public func caretRect(at position: DisplayPosition, upstream: Bool = false) -> CGRect {
+        let frame = cellFrame(at: position)
+        let cell = self.cell(at: position)
+        var rect = CaretGeometry.rect(for: position.offset, in: cell, upstream: upstream)
+        rect.origin.x += frame.minX
+        rect.origin.y += frame.minY
+        return rect
+    }
+
+    /// Caret rect for an absolute source offset.
+    public func caretRect(forSource offset: Int) -> CGRect? {
+        guard let position = projection.position(forSource: offset) else { return nil }
+        return caretRect(at: position)
+    }
+
+    /// Display position nearest `point` (document coordinates).
+    public func position(at point: CGPoint) -> DisplayPosition? {
+        guard let i = tree.index(at: Double(point.y)) else { return nil }
+        let entry = ensureLayout(i)
+        let localY = point.y - CGFloat(tree.y(of: i))
+        let b = entry.blockIndex(atY: localY)
+        let block = entry.blocks[b]
+        let blockPoint = CGPoint(x: point.x - x(of: block), y: localY - entry.blockTops[b])
+        let c = block.cellIndex(at: blockPoint)
+        let frame = block.cellFrames[c]
+        let cellPoint = CGPoint(x: blockPoint.x - frame.minX, y: blockPoint.y - frame.minY)
+        let offset = CaretGeometry.offset(at: cellPoint, in: block.cells[c])
+        return DisplayPosition(entry: i, block: b, cell: c, offset: offset)
+    }
+
+    /// Source offset nearest `point`.
+    public func sourceOffset(at point: CGPoint) -> Int? {
+        guard let position = position(at: point) else { return nil }
+        return projection.sourceOffset(for: position)
+    }
+}

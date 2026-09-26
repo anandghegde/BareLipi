@@ -44,6 +44,8 @@ enum CMarkBridge {
         defer { cmark_node_free(root) }
 
         var converter = Converter(bytes: bytes, lineStarts: lineStarts(of: bytes), ids: ids)
+        converter.emoji = options.extensions.contains(.emojiShortcodes)
+        converter.headingAttributes = options.extensions.contains(.headingAttributes)
         let result = converter.regionBlocks(from: root)
         ids = converter.ids
         return result
@@ -128,6 +130,8 @@ private struct Converter {
     let bytes: UnsafeBufferPointer<UInt8>
     let lineStarts: [Int]
     var ids: NodeIDGenerator
+    var emoji = false
+    var headingAttributes = false
 
     var count: Int { bytes.count }
 
@@ -350,8 +354,9 @@ private struct Converter {
             }
             let range = start..<max(start, end)
             let level = Int(cmark_node_get_heading_level(node))
-            return Block(id: ids.make(), range: range, kind: .heading(level: level, isSetext: isSetext),
-                         inlines: leafInlines(node, map: map, bounds: range))
+            var inlines = leafInlines(node, map: map, bounds: range)
+            if headingAttributes { inlines = splitHeadingAttributes(inlines) }
+            return Block(id: ids.make(), range: range, kind: .heading(level: level, isSetext: isSetext), inlines: inlines)
 
         case CMARK_NODE_CODE_BLOCK:
             return codeBlock(node, line: startLine, column: startColumn, endLine: endLine)
@@ -593,7 +598,7 @@ private struct Converter {
             if let inline = inline(c, bounds: bounds, map: map) { out.append(inline) }
             child = cmark_node_next(c)
         }
-        return out
+        return emoji ? splitEmoji(out) : out
     }
 
     mutating func inline(_ node: OpaquePointer, bounds: Range<Int>, map: (Int) -> Int) -> Inline? {
@@ -616,6 +621,9 @@ private struct Converter {
         default:
             switch lipi_node_get_ext_type(node) {
             case LIPI_EXT_STRIKETHROUGH: kind = .strikethrough
+            case LIPI_EXT_SUBSCRIPT: kind = .subscript
+            case LIPI_EXT_SUPERSCRIPT: kind = .superscript
+            case LIPI_EXT_HIGHLIGHT: kind = .highlight
             case LIPI_EXT_MATH:
                 var text: UnsafePointer<CChar>? = nil
                 var length: Int32 = 0
@@ -635,5 +643,102 @@ private struct Converter {
         let approximate = (lipi_node_get_flags(node) & LIPI_FLAG_APPROX) != 0
         let children = inlines(of: node, bounds: range, map: map)
         return Inline(id: ids.make(), range: range, kind: kind, children: children, isApproximate: approximate)
+    }
+}
+
+// MARK: - Text-level syntax (emoji shortcodes, heading attributes)
+
+extension Converter {
+    /// Source bytes of `range` as an array.
+    func slice(_ range: Range<Int>) -> ArraySlice<UInt8> {
+        ArraySlice(bytes[range.clamped(to: 0..<count)])
+    }
+
+    /// Runs of adjacent text inlines (cmark splits text at special
+    /// characters such as `:` and `-`): index ranges into `inlines` whose
+    /// source spells their literal byte for byte.
+    func exactTextRuns(_ inlines: [Inline]) -> [(indices: Range<Int>, range: Range<Int>, literal: String)] {
+        var out: [(Range<Int>, Range<Int>, String)] = []
+        var i = 0
+        while i < inlines.count {
+            guard case .text = inlines[i].kind, !inlines[i].isApproximate else { i += 1; continue }
+            var j = i
+            var literal = ""
+            while j < inlines.count, case .text(let s) = inlines[j].kind, !inlines[j].isApproximate,
+                  j == i || inlines[j].range.lowerBound == inlines[j - 1].range.upperBound {
+                literal += s
+                j += 1
+            }
+            let range = inlines[i].range.lowerBound..<inlines[j - 1].range.upperBound
+            if slice(range).elementsEqual(literal.utf8) { out.append((i..<j, range, literal)) }
+            i = j
+        }
+        return out
+    }
+
+    /// `:alias:` shortcodes inside text become `.emoji` inlines.
+    mutating func splitEmoji(_ inlines: [Inline]) -> [Inline] {
+        var result = inlines
+        for run in exactTextRuns(inlines).reversed() {
+            guard run.literal.utf8.count >= 3 else { continue }
+            let found = EmojiShortcodes.matches(in: run.literal.utf8)
+            guard !found.isEmpty else { continue }
+            let base = run.range.lowerBound
+            var pieces: [Inline] = []
+            var p = base
+            for (r, emoji) in found {
+                let s = base + r.lowerBound, e = base + r.upperBound
+                if s > p { pieces.append(textInline(p..<s)) }
+                pieces.append(Inline(id: ids.make(), range: s..<e, kind: .emoji(emoji)))
+                p = e
+            }
+            if p < run.range.upperBound { pieces.append(textInline(p..<run.range.upperBound)) }
+            result.replaceSubrange(run.indices, with: pieces)
+        }
+        return result
+    }
+
+    mutating func textInline(_ range: Range<Int>) -> Inline {
+        Inline(id: ids.make(), range: range, kind: .text(String(decoding: slice(range), as: UTF8.self)))
+    }
+
+    /// Pandoc `header_attributes`: a trailing `{#id .class key=value}` after
+    /// whitespace ends a heading's text. It becomes an `.attributes` inline
+    /// covering the whitespace and the braces.
+    mutating func splitHeadingAttributes(_ inlines: [Inline]) -> [Inline] {
+        guard let run = exactTextRuns(inlines).last, run.indices.upperBound == inlines.count else { return inlines }
+        let text = Array(run.literal.utf8)
+        guard text.last == 0x7D, let open = text.lastIndex(of: 0x7B), open > 0 else { return inlines }
+        let inner = text[(open + 1)..<(text.count - 1)]
+        guard Self.isAttributeList(inner) else { return inlines }
+        var start = open
+        while start > 0, text[start - 1] == 0x20 || text[start - 1] == 0x09 { start -= 1 }
+        guard start < open, start > 0 else { return inlines }
+        let base = run.range.lowerBound
+        let pieces = [textInline(base..<(base + start)),
+                      Inline(id: ids.make(), range: (base + start)..<run.range.upperBound,
+                             kind: .attributes(String(decoding: inner, as: UTF8.self)))]
+        var result = inlines
+        result.replaceSubrange(run.indices, with: pieces)
+        return result
+    }
+
+    /// `#id`, `.class`, `key=value` / `key="value"` and `-` tokens.
+    static func isAttributeList(_ inner: ArraySlice<UInt8>) -> Bool {
+        let tokens = inner.split(whereSeparator: { $0 == 0x20 || $0 == 0x09 })
+        guard !tokens.isEmpty, !inner.contains(0x7B), !inner.contains(0x7D) else { return false }
+        for t in tokens {
+            guard let first = t.first else { return false }
+            if first == 0x23 || first == 0x2E {
+                if t.count < 2 { return false }
+            } else if t.count == 1 && first == 0x2D {
+                continue
+            } else if let eq = t.firstIndex(of: 0x3D), eq > t.startIndex {
+                continue
+            } else {
+                return false
+            }
+        }
+        return true
     }
 }

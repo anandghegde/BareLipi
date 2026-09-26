@@ -144,6 +144,8 @@ public enum LayoutEngine {
                 case .strikethrough:
                     let y = line.baseline - line.ascent * 0.32
                     rect = CGRect(x: left, y: y, width: w, height: 1)
+                case .highlight:
+                    rect = CGRect(x: left, y: line.baseline - line.ascent, width: w, height: line.ascent + line.descent)
                 case .codePill, .chip, .marked:
                     let pad = cell.style.paddingX
                     rect = CGRect(x: left - pad, y: line.baseline - line.ascent - 1, width: w + 2 * pad, height: line.ascent + line.descent + 2)

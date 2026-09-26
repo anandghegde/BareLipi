@@ -63,6 +63,9 @@ public struct Renderer {
             case .link:
                 ctx.setFillColor(colors.accent.cgColor)
                 ctx.fill(rect)
+            case .highlight:
+                ctx.setFillColor(colors.highlight.cgColor)
+                ctx.fill(rect)
             case .marked:
                 ctx.setFillColor(colors.ink.cgColor)
                 ctx.fill(CGRect(x: rect.minX, y: rect.maxY - 1, width: rect.width, height: 1))

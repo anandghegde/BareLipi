@@ -872,6 +872,20 @@ struct EntryProjector {
             emitContainer(inline, &builder, style: style.union(.strong))
         case .strikethrough:
             emitContainer(inline, &builder, style: style.union(.strikethrough))
+        case .subscript:
+            emitContainer(inline, &builder, style: style.union(.subscript))
+        case .superscript:
+            emitContainer(inline, &builder, style: style.union(.superscript))
+        case .highlight:
+            emitContainer(inline, &builder, style: style.union(.highlight))
+        case .emoji(let emoji):
+            if isInlineRevealed(inline.id) {
+                builder.copy(r, style)
+            } else {
+                builder.replace(r, withBytes: Array(emoji.utf8), style: style)
+            }
+        case .attributes:
+            emitSyntax(r, &builder, revealed: isInlineRevealed(inline.id), style: style, resolve: .before)
         case .footnoteReference(let label):
             let revealed = isInlineRevealed(inline.id)
             // `[^label]`

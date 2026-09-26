@@ -173,6 +173,16 @@ struct RangeChecker {
                 if !isAutolink, let l = last, l != 0x29, l != 0x5D { fail("link end at \(r): \(slice(r).debugDescription)") }
             case .image:
                 if first != 0x21 { fail("image at \(r): \(slice(r).debugDescription)") }
+            case .subscript:
+                if first != 0x7E || last != 0x7E { fail("subscript at \(r): \(slice(r).debugDescription)") }
+            case .superscript:
+                if first != 0x5E || last != 0x5E { fail("superscript at \(r): \(slice(r).debugDescription)") }
+            case .highlight:
+                if first != 0x3D || last != 0x3D { fail("highlight at \(r): \(slice(r).debugDescription)") }
+            case .emoji:
+                if first != 0x3A || last != 0x3A { fail("emoji at \(r): \(slice(r).debugDescription)") }
+            case .attributes:
+                if last != 0x7D { fail("attributes at \(r): \(slice(r).debugDescription)") }
             case .strikethrough:
                 if first != 0x7E || last != 0x7E { fail("strikethrough at \(r): \(slice(r).debugDescription)") }
             case .footnoteReference:

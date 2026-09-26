@@ -160,7 +160,8 @@ public struct RevealPolicy: Sendable {
                 let lineStart = rope.lineRange(rope.line(at: base + r.lowerBound)).lowerBound - base
                 if caret >= max(lineStart, lineContext.lowerBound), caret <= r.upperBound { set.inlines.insert(inline.id) }
                 return
-            case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough, .image:
+            case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough, .image,
+                 .subscript, .superscript, .highlight, .emoji, .attributes:
                 if within(r) { set.inlines.insert(inline.id) }
             case .link(_, _, let isAutolink):
                 guard !isAutolink, within(r) else { break }

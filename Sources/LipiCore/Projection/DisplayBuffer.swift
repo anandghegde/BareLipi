@@ -26,6 +26,10 @@ public struct InlineStyle: OptionSet, Sendable, Hashable {
     public static let chip = InlineStyle(rawValue: 1 << 10)
     /// A `↵` shown for a revealed hard break.
     public static let lineBreak = InlineStyle(rawValue: 1 << 11)
+    /// `~x~`, `^x^` and `==x==` (opt-in syntax).
+    public static let `subscript` = InlineStyle(rawValue: 1 << 12)
+    public static let superscript = InlineStyle(rawValue: 1 << 13)
+    public static let highlight = InlineStyle(rawValue: 1 << 14)
 }
 
 /// A maximal run of display text (UTF-16 range) with one style.

@@ -102,6 +102,17 @@ public enum InlineKind: Sendable, Hashable {
     case emphasis
     case strong
     case strikethrough
+    /// `~x~` (opt-in, Pandoc rules).
+    case `subscript`
+    /// `^x^` (opt-in, Pandoc rules).
+    case superscript
+    /// `==x==` (opt-in).
+    case highlight
+    /// A known `:alias:` shortcode; the payload is the emoji.
+    case emoji(String)
+    /// `{#id .class key=value}` ending a heading, with the whitespace before
+    /// it; the payload is the text between the braces.
+    case attributes(String)
     case link(destination: String, title: String, isAutolink: Bool)
     case image(destination: String, title: String)
     case footnoteReference(label: String)

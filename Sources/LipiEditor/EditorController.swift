@@ -137,8 +137,14 @@ public final class EditorController {
         textKit?.setWidth(layout.measure)
     }
 
+    /// Increase Contrast (§6.20, §8.4): every theme set is drawn with its
+    /// high-contrast token set.
+    public var increaseContrast = false {
+        didSet { if increaseContrast != oldValue { setTheme(theme) } }
+    }
+
     public func setTheme(_ theme: Theme, zoom: CGFloat? = nil) {
-        rebuildTypesetter(theme: theme, zoom: zoom ?? self.zoom)
+        rebuildTypesetter(theme: increaseContrast ? theme.highContrast : theme.standard, zoom: zoom ?? self.zoom)
         _ = refresh(textChanged: false, started: DispatchTime.now())
     }
 

@@ -28,21 +28,21 @@ extension EditorView {
         return rotor
     }
 
-    /// The next (or previous) target of `kind` after `from` (UTF-16), whose
-    /// label contains `filter`; for tests and the rotor delegate.
+    /// The next (or previous) target of `kind` after `from`, whose label
+    /// contains `filter`; for tests and the rotor delegate. Ranges are in the
+    /// accessibility text (`accessibilityValue`), like every other range the
+    /// view reports.
     public func rotorTarget(_ kind: NavigationKind, after from: NSRange?, forward: Bool, filter: String = "") -> (range: NSRange, label: String)? {
-        let targets = controller.navigationTargets(kind).filter { filter.isEmpty || $0.label.localizedCaseInsensitiveContains(filter) }
-        let position = from.map { controller.byteRange(fromUTF16: $0) }
-        let pick: NavigationTarget?
-        if let position {
-            pick = forward ? targets.first { $0.range.lowerBound > position.lowerBound }
-                : targets.last { $0.range.lowerBound < position.lowerBound }
-        } else {
-            let caret = controller.caret
-            pick = forward ? targets.first { $0.range.upperBound > caret } ?? targets.first
-                : targets.last { $0.range.lowerBound < caret } ?? targets.last
+        let text = accessibilityText
+        let targets = controller.navigationTargets(kind)
+            .filter { filter.isEmpty || $0.label.localizedCaseInsensitiveContains(filter) }
+            .map { (range: text.range(forSource: $0.range), label: $0.label) }
+        if let from {
+            return forward ? targets.first { $0.range.location > from.location } : targets.last { $0.range.location < from.location }
         }
-        return pick.map { (controller.utf16Range(fromBytes: $0.range), $0.label) }
+        let caret = text.offset(forSource: controller.caret)
+        return forward ? targets.first { NSMaxRange($0.range) > caret } ?? targets.first
+            : targets.last { $0.range.location < caret } ?? targets.last
     }
 }
 

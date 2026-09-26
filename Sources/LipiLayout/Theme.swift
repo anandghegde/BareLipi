@@ -138,6 +138,27 @@ public struct ThemeColors: Sendable, Hashable {
         for token in code.all { pairs.append(("syntax.\(token.name)/codeBg", token.color, codeBg)) }
         return pairs
     }
+
+    /// The Increase Contrast token set (§8.4): ink becomes pure black or
+    /// white, muted and syntax take ink2, borders ink2 at 60 %, and the
+    /// selection is pushed toward ink until it stands 3:1 off the background.
+    public func highContrast(isDark: Bool) -> ThemeColors {
+        var c = self
+        c.ink = ThemeColor(hex: isDark ? 0xFFFFFF : 0x000000)
+        c.muted = ink2
+        c.syntax = ink2
+        c.border = ThemeColor(red: ink2.red, green: ink2.green, blue: ink2.blue, alpha: 0.6)
+        let base = selection.over(bg)
+        var raised = base
+        var t = 0.0
+        while raised.contrastRatio(against: bg) < 3, t < 1 {
+            t = min(1, t + 0.02)
+            raised = ThemeColor(red: base.red + (c.ink.red - base.red) * t, green: base.green + (c.ink.green - base.green) * t,
+                                blue: base.blue + (c.ink.blue - base.blue) * t)
+        }
+        c.selection = raised
+        return c
+    }
 }
 
 // MARK: - Fonts and metrics
@@ -195,6 +216,8 @@ public struct Theme: Sendable, Hashable {
     public var fonts: ThemeFonts
     public var metrics: ThemeMetrics
     public var colors: ThemeColors
+    /// The colours before `highContrast` substituted them.
+    private var standardColors: ThemeColors?
 
     public init(name: String, isDark: Bool, fonts: ThemeFonts, metrics: ThemeMetrics = ThemeMetrics(), colors: ThemeColors) {
         self.name = name
@@ -203,6 +226,26 @@ public struct Theme: Sendable, Hashable {
         self.metrics = metrics
         self.colors = colors
     }
+
+    /// The theme with its Increase Contrast token set applied (§8.4).
+    public var highContrast: Theme {
+        guard standardColors == nil else { return self }
+        var t = self
+        t.standardColors = colors
+        t.colors = colors.highContrast(isDark: isDark)
+        return t
+    }
+
+    /// The theme without the Increase Contrast substitutions.
+    public var standard: Theme {
+        guard let standardColors else { return self }
+        var t = self
+        t.colors = standardColors
+        t.standardColors = nil
+        return t
+    }
+
+    public var isHighContrast: Bool { standardColors != nil }
 
     static let serifFonts = ThemeFonts(
         body: ["Source Serif 4", "Charter", "Georgia"],

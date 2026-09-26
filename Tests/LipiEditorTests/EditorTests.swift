@@ -277,25 +277,30 @@ struct EditorViewTests {
     }
 
     @Test func accessibilityDescribesTheDocument() {
+        // The protocol speaks the projected (folded) text, not the source.
         let text = "# Heading\n\nParagraph with ಕನ್ನಡ."
+        let shown = "Heading\nParagraph with ಕನ್ನಡ."
         let view = makeView(text)
         #expect(view.isAccessibilityElement())
         #expect(view.accessibilityRole() == .textArea)
-        #expect(view.accessibilityValue() as? String == text)
-        #expect(view.accessibilityNumberOfCharacters() == (text as NSString).length)
-        view.setAccessibilitySelectedTextRange(nsRange(11, 9))
+        #expect(view.accessibilityValue() as? String == shown)
+        #expect(view.accessibilityNumberOfCharacters() == (shown as NSString).length)
+        view.setAccessibilitySelectedTextRange(nsRange(8, 9))
+        #expect(view.controller.selection.range == 11..<20)
         #expect(view.accessibilitySelectedText() == "Paragraph")
-        #expect(view.accessibilitySelectedTextRange() == nsRange(11, 9))
-        #expect(view.accessibilityString(for: nsRange(2, 7)) == "Heading")
-        #expect(view.accessibilityInsertionPointLineNumber() == 2)
+        #expect(view.accessibilitySelectedTextRange() == nsRange(8, 9))
+        #expect(view.accessibilityString(for: nsRange(0, 7)) == "Heading")
+        #expect(view.accessibilityInsertionPointLineNumber() == 1)
         #expect(view.accessibilityLine(for: 0) == 0)
-        #expect(view.accessibilityRange(forLine: 2) == nsRange(11, 21))
-        let frame = view.accessibilityFrame(for: nsRange(11, 9))
+        #expect(view.accessibilityLine(for: 9) == 1)
+        #expect(view.accessibilityRange(forLine: 0) == nsRange(0, 8))
+        #expect(view.accessibilityRange(forLine: 1) == nsRange(8, 21))
+        let frame = view.accessibilityFrame(for: nsRange(8, 9))
         #expect(frame.width > 10 && frame.height > 10)
         let visible = view.accessibilityVisibleCharacterRange()
-        #expect(visible.location == 0 && visible.length == (text as NSString).length)
+        #expect(visible.location == 0 && visible.length == (shown as NSString).length)
         // ಕನ್ನಡ is 5 UTF-16 units; the cluster ನ್ನ is 3 of them.
-        let cluster = view.accessibilityRange(for: 11 + 15 + 1)
+        let cluster = view.accessibilityRange(for: 8 + 15 + 1)
         #expect(cluster.length == 3, "\(cluster)")
         view.setAccessibilityValue("new value")
         #expect(view.controller.string == "new value")

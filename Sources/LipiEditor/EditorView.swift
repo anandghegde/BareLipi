@@ -5,8 +5,9 @@ import os
 
 /// The editor surface (ADR-002): one flipped, layer-backed `NSView` that is
 /// the document view of an `NSScrollView`, draws the visible blocks with
-/// `Renderer`, and speaks `NSTextInputClient` and the accessibility text
-/// protocol in source UTF-16 units.
+/// `Renderer`, speaks `NSTextInputClient` in source UTF-16 units and the
+/// accessibility text protocol over the projected text
+/// (`EditorView+Accessibility.swift`).
 public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     public let controller: EditorController
     private let caret = CaretController()
@@ -38,6 +39,22 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
     var isMouseSelecting: Bool { mouseAnchor != nil }
+    /// The projected text the accessibility protocol speaks, built lazily.
+    let accessibilityModel = AccessibilityModel()
+    /// Misspelled source ranges within a source range, for the accessibility
+    /// misspelling attribute (§6.20). Spell checking is not wired yet; the
+    /// app or a checker sets this hook.
+    public var misspelledRanges: ((Range<Int>) -> [Range<Int>])?
+    /// Increase Contrast, Reduce Motion and Reduce Transparency as the view
+    /// applies them; follows the system unless `followsSystemDisplayOptions`
+    /// is turned off (tests).
+    public var displayOptions = AccessibilityDisplayOptions() {
+        didSet { applyDisplayOptions(from: oldValue) }
+    }
+    public var followsSystemDisplayOptions = true {
+        didSet { if followsSystemDisplayOptions { displayOptions = .system } }
+    }
+    nonisolated(unsafe) private var displayOptionsObserver: NSObjectProtocol?
 
     public init(controller: EditorController, frame: NSRect = NSRect(x: 0, y: 0, width: 800, height: 600)) {
         self.controller = controller
@@ -53,6 +70,28 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         setAccessibilityRole(.textArea)
         registerForDraggedTypes(EditorView.imageDragTypes)
         syncFrameHeight()
+        displayOptionsObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.followsSystemDisplayOptions else { return }
+                self.displayOptions = .system
+            }
+        }
+        // Observers do not run for assignments in the initializer.
+        displayOptions = .system
+        applyDisplayOptions(from: AccessibilityDisplayOptions())
+    }
+
+    deinit {
+        if let displayOptionsObserver { NSWorkspace.shared.notificationCenter.removeObserver(displayOptionsObserver) }
+    }
+
+    private func applyDisplayOptions(from old: AccessibilityDisplayOptions) {
+        guard displayOptions != old else { return }
+        controller.increaseContrast = displayOptions.increaseContrast
+        needsDisplay = true
+        NotificationCenter.default.post(name: AccessibilityDisplayOptions.didChange, object: self)
     }
 
     @available(*, unavailable)
@@ -71,6 +110,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         caret.restart()
         syncFrameHeight()
         needsDisplay = true
+        postAccessibilityChange(textChanged: change.textChanged)
         if change.viewportShift != 0, let clip = enclosingScrollView?.contentView {
             var origin = clip.bounds.origin
             origin.y += change.viewportShift
@@ -571,90 +611,9 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
 
     public func attributedString() -> NSAttributedString { NSAttributedString(string: controller.string) }
 
-    private func screenRect(_ rect: CGRect) -> NSRect {
+    func screenRect(_ rect: CGRect) -> NSRect {
         let inWindow = convert(rect, to: nil)
         return window?.convertToScreen(inWindow) ?? inWindow
-    }
-
-    // MARK: Accessibility (text area, UTF-16 units)
-
-    public override func isAccessibilityElement() -> Bool { true }
-    public override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
-    public override func accessibilityRoleDescription() -> String? { "Markdown editor" }
-    public override func accessibilityLabel() -> String? { "Document" }
-    public override func accessibilityValue() -> Any? { controller.string }
-
-    public override func setAccessibilityValue(_ value: Any?) {
-        guard let text = value as? String else { return }
-        controller.replace(0..<controller.count, with: text)
-    }
-
-    public override func accessibilityNumberOfCharacters() -> Int { controller.utf16Count }
-
-    public override func accessibilitySelectedText() -> String? {
-        controller.string(in: controller.selection.range)
-    }
-
-    public override func accessibilitySelectedTextRange() -> NSRange {
-        controller.utf16Range(fromBytes: controller.selection.range)
-    }
-
-    public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
-        let bytes = controller.byteRange(fromUTF16: range)
-        if bytes.isEmpty { controller.moveCaret(to: bytes.lowerBound) } else { controller.select(bytes) }
-    }
-
-    public override func accessibilityString(for range: NSRange) -> String? {
-        controller.string(in: controller.byteRange(fromUTF16: range))
-    }
-
-    public override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
-        accessibilityString(for: range).map { NSAttributedString(string: $0) }
-    }
-
-    public override func accessibilityFrame(for range: NSRange) -> NSRect {
-        let bytes = controller.byteRange(fromUTF16: range)
-        let rects = bytes.isEmpty ? [controller.caretRect(forSource: bytes.lowerBound)] : controller.rects(forSource: bytes, visible: bounds)
-        guard var union = rects.first else { return screenRect(controller.caretRect(forSource: bytes.lowerBound)) }
-        for rect in rects.dropFirst() { union = union.union(rect) }
-        if union.width < 1 { union.size.width = 1 }
-        return screenRect(union)
-    }
-
-    public override func accessibilityVisibleCharacterRange() -> NSRange {
-        // Whole entries: the first and last top-level blocks on screen.
-        let visible = visibleRect.isEmpty || visibleRect.height > bounds.height ? bounds : visibleRect
-        let entries = controller.projection.entries
-        guard let first = controller.sourceOffset(at: CGPoint(x: 0, y: visible.minY)).flatMap(controller.projection.entryIndex(containing:)),
-              let last = controller.sourceOffset(at: CGPoint(x: bounds.width, y: visible.maxY)).flatMap(controller.projection.entryIndex(containing:))
-        else { return controller.utf16Range(fromBytes: 0..<controller.count) }
-        let start = entries[min(first, last)].start
-        let end = entries[max(first, last)].start + entries[max(first, last)].length
-        return controller.utf16Range(fromBytes: start..<end)
-    }
-
-    public override func accessibilityInsertionPointLineNumber() -> Int {
-        controller.rope.line(at: controller.caret)
-    }
-
-    public override func accessibilityLine(for index: Int) -> Int {
-        controller.rope.line(at: controller.byteOffset(fromUTF16: index))
-    }
-
-    public override func accessibilityRange(forLine line: Int) -> NSRange {
-        guard line >= 0, line < controller.rope.lineCount else { return NSRange(location: NSNotFound, length: 0) }
-        return controller.utf16Range(fromBytes: controller.rope.lineRange(line))
-    }
-
-    public override func accessibilityRange(for point: NSPoint) -> NSRange {
-        let index = characterIndex(for: point)
-        return index == NSNotFound ? NSRange(location: NSNotFound, length: 0) : NSRange(location: index, length: 0)
-    }
-
-    public override func accessibilityRange(for index: Int) -> NSRange {
-        let byte = controller.byteOffset(fromUTF16: index)
-        let end = controller.nextCaretStop(after: byte)
-        return controller.utf16Range(fromBytes: byte..<end)
     }
 }
 

@@ -21,7 +21,8 @@ struct RotorTests {
         let view = EditorView(controller: EditorController(text: text))
         let first = view.rotorTarget(.heading, after: nil, forward: true)
         #expect(first?.label == "Heading level 1, Title")
-        #expect(first?.range == NSRange(location: 0, length: 7))
+        // Ranges are in the accessibility text, where "# Title" reads "Title".
+        #expect(first?.range == NSRange(location: 0, length: 5))
         let second = view.rotorTarget(.heading, after: first?.range, forward: true)
         #expect(second?.label == "Heading level 2, Quoted")
         #expect(view.rotorTarget(.heading, after: second?.range, forward: true) == nil)

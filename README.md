@@ -59,6 +59,16 @@ DerivedData/Build/Products/Release/BareLipi.app/Contents/MacOS/BareLipi --fixtur
 
 Requires Xcode 26 / Swift 6.3 and macOS 15 or later at runtime.
 
+## Commands and key bindings
+
+Every menu item and editor action is a `Command` in `Sources/LipiApp/Commands/CommandRegistry.swift` (id, title, menu, default keys, action); the main menu, the editor's key table, the command palette (Cmd-Shift-P, or `>` in Quick Open) and Settings → Keys are built from it. User bindings live in `~/Library/Application Support/BareLipi/keymap.json`, loaded with the menu at launch and reloaded when the file changes; problems (bad JSON, unknown ids or presets, unparsable keys, conflicts) are logged and shown once in an alert.
+
+```json
+{ "preset": "BareLipi", "bindings": { "format.bold": "Cmd-Shift-B", "view.zoomIn": ["Cmd-=", "Cmd-+"], "file.quickOpen": null } }
+```
+
+Presets: `BareLipi` (default, PRD Appendix B) and `Typora` (Appendix B's differences). Cmd-P: the BareLipi preset keeps Cmd-P for Quick Open, and Print takes Cmd-Opt-P when PDF export and printing land (P0-14 Phase 2); the Typora preset moves Quick Open to Cmd-Shift-O so Cmd-P is free for Print, as in Typora and the HIG. Cmd-0 is both Paragraph (in the editor) and Actual Size (elsewhere) on purpose. Keys the editor handles in context (Tab and Shift-Tab in tables and lists, Opt-Return in a cell, Shift-Return, Opt-Up/Down, Esc) are listed in Settings → Keys but not rebindable yet.
+
 ## Phase 0 status
 
 - [x] `LipiRope`: persistent rope, scalar-safe edits, O(log n) offset conversion, structural validation, property-tested on mixed-script text (Latin, Kannada, Devanagari, Tamil, CJK, Arabic, emoji ZWJ, CRLF)

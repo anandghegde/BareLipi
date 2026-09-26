@@ -83,23 +83,31 @@ public struct QuickOpenItem: Sendable, Equatable {
         /// A heading in an open document: the document's file (nil when
         /// untitled), the window's number and the heading's source offset.
         case heading(document: URL?, window: Int, offset: Int, level: Int)
-        /// A menu command, by the path of titles to its item.
-        case command(path: [String])
+        /// A registered command (P0-11), by id.
+        case command(id: String)
     }
 
     public var kind: Kind
     public var title: String
     public var subtitle: String
     public var isOpen: Bool
-    /// 0 for the most recent document; nil for never-opened files.
+    /// 0 for the most recent document or command; nil for never-opened
+    /// files and never-run commands.
     public var recency: Int?
+    /// A command's current shortcut, as menu glyphs.
+    public var shortcut: String
+    /// Matched after the title (a command's id).
+    public var keywords: String
 
-    public init(kind: Kind, title: String, subtitle: String, isOpen: Bool = false, recency: Int? = nil) {
+    public init(kind: Kind, title: String, subtitle: String, isOpen: Bool = false, recency: Int? = nil,
+                shortcut: String = "", keywords: String = "") {
         self.kind = kind
         self.title = title
         self.subtitle = subtitle
         self.isOpen = isOpen
         self.recency = recency
+        self.shortcut = shortcut
+        self.keywords = keywords
     }
 }
 
@@ -141,9 +149,11 @@ public struct QuickOpenModel: Sendable {
         var scored: [(item: QuickOpenItem, score: Int, order: Int)] = []
         for (order, item) in pool.enumerated() {
             let haystack = matchSubtitle ? item.subtitle : item.title
-            guard let m = FuzzyMatcher.match(query, in: haystack) ?? (matchSubtitle ? nil : FuzzyMatcher.match(query, in: item.subtitle).map {
-                FuzzyMatcher.Match(score: $0.score - 10, positions: $0.positions)
-            }) else { continue }
+            func weaker(_ text: String, by penalty: Int) -> FuzzyMatcher.Match? {
+                guard !matchSubtitle, !text.isEmpty else { return nil }
+                return FuzzyMatcher.match(query, in: text).map { FuzzyMatcher.Match(score: $0.score - penalty, positions: $0.positions) }
+            }
+            guard let m = FuzzyMatcher.match(query, in: haystack) ?? weaker(item.keywords, by: 5) ?? weaker(item.subtitle, by: 10) else { continue }
             var score = m.score
             if item.isOpen { score += 6 }
             if let r = item.recency { score += max(0, 12 - r) }
@@ -205,31 +215,6 @@ public struct QuickOpenModel: Sendable {
                 out.append(QuickOpenItem(kind: .heading(document: document, window: window, offset: entry.start + block.sourceRange.lowerBound, level: level),
                                          title: String(repeating: "  ", count: max(0, level - 1)) + text,
                                          subtitle: name, isOpen: true))
-            }
-        }
-        return out
-    }
-
-    /// Every enabled leaf item of `menu`, as a command.
-    @MainActor
-    public static func commands(in menu: NSMenu, path: [String] = [], enabledOnly: Bool = true) -> [QuickOpenItem] {
-        var out: [QuickOpenItem] = []
-        menu.update()
-        for item in menu.items where !item.isSeparatorItem && !item.isHidden {
-            let here = path + [item.title]
-            if let sub = item.submenu {
-                if sub === NSApp.servicesMenu || item.title == "Open Recent" { continue }
-                out += commands(in: sub, path: here, enabledOnly: enabledOnly)
-            } else if item.action != nil, item.isEnabled || !enabledOnly {
-                var key = item.keyEquivalent.uppercased()
-                if !key.isEmpty {
-                    let m = item.keyEquivalentModifierMask
-                    key = (m.contains(.control) ? "⌃" : "") + (m.contains(.option) ? "⌥" : "") + (m.contains(.shift) ? "⇧" : "")
-                        + (m.contains(.command) ? "⌘" : "") + (key == "\r" ? "↩" : key)
-                }
-                out.append(QuickOpenItem(kind: .command(path: here), title: item.title,
-                                         subtitle: (path.dropFirst().isEmpty ? path : Array(path.dropFirst())).joined(separator: " › ")
-                                            + (key.isEmpty ? "" : "   " + key)))
             }
         }
         return out
@@ -387,7 +372,18 @@ public final class QuickOpenPanel: NSPanel, NSSearchFieldDelegate, NSTableViewDa
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 1
-        return stack
+        guard !item.shortcut.isEmpty else { return stack }
+        let shortcut = NSTextField(labelWithString: item.shortcut)
+        shortcut.font = .systemFont(ofSize: 12)
+        shortcut.textColor = .secondaryLabelColor
+        shortcut.setContentCompressionResistancePriority(.required, for: .horizontal)
+        stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [stack, NSView(), shortcut])
+        row.orientation = .horizontal
+        row.distribution = .fill
+        row.setAccessibilityElement(true)
+        row.setAccessibilityLabel("\(item.title), \(item.subtitle)")
+        return row
     }
 }
 
@@ -399,7 +395,7 @@ public enum QuickOpen {
     static var panel: QuickOpenPanel?
 
     /// Candidates from the running app.
-    public static func model(documents: [NSDocument], recents: [URL], mainMenu: NSMenu?) -> QuickOpenModel {
+    public static func model(documents: [NSDocument], recents: [URL], commands: [QuickOpenItem]) -> QuickOpenModel {
         var files: [QuickOpenItem] = []
         var seen = Set<String>()
         let openURLs = documents.compactMap(\.fileURL).map(\.standardizedFileURL)
@@ -427,7 +423,6 @@ public enum QuickOpen {
             headings += QuickOpenModel.headings(of: wc.controller, document: doc.fileURL, window: wc.window?.windowNumber ?? 0,
                                                 name: doc.displayName)
         }
-        let commands = mainMenu.map { QuickOpenModel.commands(in: $0) } ?? []
         return QuickOpenModel(files: files, headings: headings, commands: commands)
     }
 
@@ -435,7 +430,11 @@ public enum QuickOpen {
     public static func show(prefix: String = "") {
         let target = NSApp.keyWindow ?? NSApp.mainWindow
         let controller = NSDocumentController.shared
-        let model = model(documents: controller.documents, recents: controller.recentDocumentURLs, mainMenu: NSApp.mainMenu)
+        // Commands are validated against the key window before the panel takes key.
+        let registry = CommandRegistry.shared
+        let commands = CommandPalette.items(registry: registry, enabled: registry.enabledIDs(), history: CommandPalette.history(),
+                                            documents: controller is LipiDocumentController)
+        let model = model(documents: controller.documents, recents: controller.recentDocumentURLs, commands: commands)
         let panel = QuickOpenPanel(model: model)
         panel.onChoose = { item, newTab, reveal in run(item, newTab: newTab, reveal: reveal, from: target) }
         self.panel = panel
@@ -455,21 +454,11 @@ public enum QuickOpen {
             target.makeKeyAndOrderFront(nil)
             wc.controller.moveCaret(to: offset)
             target.makeFirstResponder(wc.editor)
-        case .command(let path):
+        case .command(let id):
             window?.makeKeyAndOrderFront(nil)
-            guard let item = menuItem(at: path, in: NSApp.mainMenu), let action = item.action else { return }
-            NSApp.sendAction(action, to: item.target, from: item)
+            CommandPalette.record(id)
+            CommandRegistry.shared.perform(id)
         }
-    }
-
-    static func menuItem(at path: [String], in menu: NSMenu?) -> NSMenuItem? {
-        var menu = menu
-        var found: NSMenuItem?
-        for title in path {
-            found = menu?.items.first { $0.title == title }
-            menu = found?.submenu
-        }
-        return found
     }
 }
 

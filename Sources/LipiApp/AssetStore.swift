@@ -113,7 +113,8 @@ public enum AssetPolicy {
     }
 
     /// Bytes and extension to store: TIFF becomes PNG, HEIC becomes JPEG at
-    /// quality 0.9 (when `convertHEIC`), everything else is kept as is.
+    /// quality 0.9 (when `convertHEIC`), everything else (WebP, GIF…) is
+    /// kept as is.
     public static func encode(_ data: Data, type: UTType, convertHEIC: Bool = true) -> (data: Data, ext: String)? {
         if type.conforms(to: .png) { return (data, "png") }
         if type.conforms(to: .tiff) {
@@ -126,6 +127,7 @@ public enum AssetPolicy {
             return (jpeg, "jpg")
         }
         if type.conforms(to: .jpeg) { return (data, "jpg") }
+        if type.conforms(to: .webP) { return (data, "webp") }
         return (data, type.preferredFilenameExtension ?? "img")
     }
 

@@ -61,8 +61,15 @@ extension HTMLExporter {
         var missing: [String] = []
         var usedNames: [String: URL] = [:]
         var rest = html[...]
-        let marker = "<img src=\""
-        while let start = rest.range(of: marker) {
+        // cmark writes `src` first; raw `<img>` tags (resized images) may not.
+        while let tag = rest.range(of: "<img") {
+            let inTag = rest[tag.upperBound...]
+            let tagEnd = inTag.firstIndex(of: ">") ?? inTag.endIndex
+            guard let start = inTag[..<tagEnd].range(of: " src=\"") else {
+                out += rest[..<tag.upperBound]
+                rest = inTag
+                continue
+            }
             out += rest[..<start.upperBound]
             let afterSrc = rest[start.upperBound...]
             guard let quote = afterSrc.firstIndex(of: "\"") else {

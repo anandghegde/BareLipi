@@ -152,6 +152,19 @@ public struct OffsetMap: Sendable, Hashable {
         return result
     }
 
+    /// Source range of the replaced segment (a stand-in such as an entity,
+    /// emoji or chip) whose display text contains UTF-16 `offset`, if any.
+    public func replacedSourceRange(atDisplay offset: Int) -> Range<Int>? {
+        let δ = Int32(offset)
+        var lo = 0, hi = segments.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if segments[mid].displayEnd > δ { hi = mid } else { lo = mid + 1 }
+        }
+        guard lo < segments.count, segments[lo].displayStart <= δ, segments[lo].kind == .replaced else { return nil }
+        return segments[lo].sourceRange
+    }
+
     /// True when a display caret can stand for `offset`: the offset is a
     /// segment boundary or inside a copied segment.
     public func isOccupiable(_ offset: Int) -> Bool {

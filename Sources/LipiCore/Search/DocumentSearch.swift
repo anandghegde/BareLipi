@@ -270,13 +270,16 @@ extension DocumentSearch {
     /// Matches of `query` in the rendered text of `projection` (each display
     /// cell searched on its own, syntax hidden), mapped back to source byte
     /// ranges. A match whose ends map to the same source offset (inside
-    /// hidden syntax) is dropped.
+    /// hidden syntax) is dropped. A match that starts or ends inside a
+    /// stand-in (an entity, emoji, chip) takes in the stand-in's whole
+    /// source; the generated `[toc]` list is not searched (its headings are,
+    /// where they are written); overlapping ranges keep the first.
     public static func renderedMatches(of query: FindQuery, in projection: Projection) throws -> [Range<Int>] {
         guard !query.isEmpty else { return [] }
         try validate(query)
         var out: [Range<Int>] = []
         for entry in projection.entries {
-            for block in entry.blocks {
+            for block in entry.blocks where !block.context.isTableOfContents {
                 for cell in block.cells where !cell.text.isEmpty {
                     let text = SearchText(cell.text)
                     let hits = try matches(of: query, in: text)
@@ -288,15 +291,20 @@ extension DocumentSearch {
                         let last = lastScalarStart(before: hit.upperBound, in: text.bytes)
                         let u0 = converter.utf16(forByte: hit.lowerBound)
                         let uLast = converter.utf16(forByte: last)
-                        let s0 = entry.start + cell.sourceOffset(forDisplay: u0)
-                        let s1 = entry.start + cell.sourceOffset(forDisplay: uLast) + (hit.upperBound - last)
+                        var s0 = entry.start + cell.sourceOffset(forDisplay: u0)
+                        var s1 = entry.start + cell.sourceOffset(forDisplay: uLast) + (hit.upperBound - last)
+                        if let r = cell.map.replacedSourceRange(atDisplay: u0) { s0 = entry.start + r.lowerBound }
+                        if let r = cell.map.replacedSourceRange(atDisplay: uLast) { s1 = entry.start + r.upperBound }
                         if s1 > s0 { out.append(s0..<s1) }
                     }
                 }
             }
         }
-        out.sort { $0.lowerBound < $1.lowerBound }
-        return out
+        out.sort { ($0.lowerBound, $0.upperBound) < ($1.lowerBound, $1.upperBound) }
+        var disjoint: [Range<Int>] = []
+        disjoint.reserveCapacity(out.count)
+        for r in out where disjoint.last.map({ r.lowerBound >= $0.upperBound }) ?? true { disjoint.append(r) }
+        return disjoint
     }
 
     static func lastScalarStart(before end: Int, in bytes: [UInt8]) -> Int {

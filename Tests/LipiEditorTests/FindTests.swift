@@ -106,6 +106,33 @@ struct FindTests {
         #expect(f.controller.string == "Some **b** and [b](bold.md)\n")
     }
 
+    /// The `[toc]` list is generated text: its hits all mapped to the `[`
+    /// of `[toc]`, and Replace All rewrote that byte once per hit
+    /// (`[toc]` became `$1·1·1·toc]`). Found by the byte-preservation run.
+    @Test func renderedScopeSkipsTheGeneratedTableOfContents() {
+        let text = "[toc]\n\n# Alpha beta\n\n## Gamma\n"
+        let f = session(text, "(\\p{L}+)")
+        f.query = FindQuery("(\\p{L}+)", isRegex: true)
+        f.scope = .rendered
+        let matches = f.matches
+        #expect(zip(matches, matches.dropFirst()).allSatisfy { $0.upperBound <= $1.lowerBound })
+        #expect(matches.allSatisfy { $0.lowerBound >= "[toc]\n\n".utf8.count })
+        #expect(f.replaceAll(with: "<$1>") == 3)
+        #expect(f.controller.string == "[toc]\n\n# <Alpha> <beta>\n\n## <Gamma>\n")
+        f.controller.undo()
+        #expect(f.controller.string == text)
+    }
+
+    /// A hit inside a stand-in (an entity shows as one character) covers
+    /// the stand-in's whole source, not its first bytes.
+    @Test func renderedScopeReplacesAWholeEntity() {
+        let f = session("Fish &amp; chips\n", "&")
+        f.scope = .rendered
+        #expect(f.matches == ["Fish ".utf8.count..<"Fish &amp;".utf8.count])
+        #expect(f.replaceAll(with: "and") == 1)
+        #expect(f.controller.string == "Fish and chips\n")
+    }
+
     @Test func currentMatchRevealsItsSyntax() {
         let f = session("See [here](http://example.com/target) now.\n", "target")
         f.controller.moveCaret(to: f.controller.count)

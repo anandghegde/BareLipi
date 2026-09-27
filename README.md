@@ -25,11 +25,14 @@ The product requirements document lives in the Claude Doc "BareLipi PRD — Nati
 | `App` | The app bundle's delegate and `Info.plist` (target `BareLipiApp` in `project.yml`, `NSDocument`-based, hardened runtime) |
 | `Sources/lipi-bench` | Release-mode micro-benchmarks for the core and the layout spike |
 | `Sources/lipi-fixtures` | Writes the fixture set to `Fixtures/perf` as `.md` files |
+| `Sources/lipi-roundtrip` | The byte-preservation check (`ByteRoundTrip`, in `LipiApp`) over any folder of Markdown or the built-in corpus |
+| `Fixtures/corpus` | Small byte-exact corpus files (`-text` in `.gitattributes`); `ByteCorpus` in `LipiFixtures` adds their variants, generated edge cases, the pathological fixtures and every spec example |
 | `Tests/LipiCoreTests` | swift-testing suites, including property tests against a `String` model and the parser range invariants |
 | `Tests/LipiCoreTests/Fixtures` | CommonMark 0.31.2 and GFM 0.29 spec files plus the GFM extension and regression suites |
 | `Tests/LipiLayoutTests` | Typesetter, block and document layout, tables, fonts, themes, code highlighting, and TextKit 2 comparison suites |
 | `Tests/LipiEditorTests` | Controller and view tests: clusters, IME, motion, selection, accessibility, pixel checks, formatting commands, smart typing, auto-pair, undo coalescing, source mode |
 | `Tests/LipiAppTests` | Atomic writes, text codec, external changes, restoration, document round trips and HTML export |
+| `Tests/LipiCorpusTests` | The byte-preservation exit check over the corpus (about 2 min in debug) |
 | `Tests/LipiPerfTests` | XCTest performance harness for the §9.1 rows with committed baselines |
 | `Scripts/vendor-tree-sitter.py` | Fetches the pinned tree-sitter runtime and grammars and regenerates `Sources/CTreeSitter*` and `Sources/LipiHighlight/GrammarQueries.swift` |
 | `project.yml` | xcodegen spec for the application bundle (`xcodegen generate`) |
@@ -42,6 +45,8 @@ swift build
 swift test                                   # unit suites; perf rows print but do not gate
 swift run -c release lipi-bench              # core and layout-spike micro-benchmarks
 swift run -c release lipi-fixtures           # writes Fixtures/perf/*.md (ignored by git)
+swift run -c release lipi-roundtrip ~/Notes  # open, save, views and random edits must keep every byte; lists files that differ
+swift run -c release lipi-roundtrip --corpus [--match S] [--steps N] [--no-render] -v   # the built-in corpus (~1 h, mostly the 1 MB paragraph)
 swift run -c release BareLipi                # the editor with a welcome document
 swift run -c release BareLipi path/to/doc.md
 swift run -c release BareLipi --fixture lorem-50k --engine textkit2 --theme kari --zoom 1.2
@@ -157,7 +162,7 @@ Presets: `BareLipi` (default, PRD Appendix B) and `Typora` (Appendix B's differe
 
 ## Phase 1 status
 
-Phase 1 is the "Bare" MVP of PRD §10. Every item on the §10 list has now landed, P0-11 included; what remains is the short list at the end of this section and the exit checks (byte-preservation corpus, ten days of dogfooding, VoiceOver navigation by heading on a real run). The suite is 562 swift-testing tests in 82 suites plus the 28-test XCTest harness (11 rows skip without Instruments).
+Phase 1 is the "Bare" MVP of PRD §10. Every item on the §10 list has now landed, P0-11 included; what remains is the short list at the end of this section and the exit checks (ten days of dogfooding, VoiceOver navigation by heading on a real run; the byte-preservation corpus is done, below). The suite is 645 swift-testing tests in 92 suites plus the 28-test XCTest harness (11 rows skip without Instruments).
 
 - [x] Table carry-overs from Phase 0. Row-lazy table layout: a row is measured when it scrolls into view or the caret or a hit test reaches it, and carries an estimated height before that, so caret and click positions stay right; column widths are sampled and only grow; the layout cache is weighted by lines actually laid out and the renderer draws the grid for visible rows only. Per-row table re-parse: an edit inside a body row re-parses that row alone (the header, the delimiter line and the edited line are parsed on their own, checked and spliced back in), every other row keeps its id, and the entry carries a revision and a row-edit record so the projection reuses the old table and redoes just that row plus any rows the caret reveals; caret-reveal scanning now stays within the entry, which removed a whole-table shift per keystroke. Randomised tests check the invariants against a fresh full parse; none needed the rebuild fallback. `lipi-bench` and the harness, release, M4:
 
@@ -230,6 +235,8 @@ Phase 1 is the "Bare" MVP of PRD §10. Every item on the §10 list has now lande
   Keystroke cost: the accessibility and syntax work made typing 9–18 % slower in A/B release runs (plain ~470 → ~537 µs, footnotes ~825 → ~910 µs, emoji ~500 → ~592 µs, mostly colour-emoji drawing), with no single hotspot in a profile. Still well inside budget, but worth another look.
 
   Left in Phase 1: the launch budget (AppKit start-up alone is ~50 ms; the remaining options are structural, see Launch above); and the exit checks.
+
+- [x] Exit check: byte-preservation corpus. `ByteRoundTrip` opens each file through `LipiDocument` with its window and saves it (Cmd-S and autosave, `AtomicWriter`); projects it in hybrid mode, moves the caret, switches to source mode and back, through the four themes, zoom, contrast, widths, optional syntax, focus and typewriter, and draws it, none of which may touch the buffer; then runs 40 seeded random commands (typing, IME, paste, deletes, inline toggles, smart Enter, auto-pair, table Tab / Enter, find and Replace All in both scopes, image zoom, footnotes, block and outline moves, promote / demote) against a model that applies only the edits each change declares, and undoes every step back to the original bytes. Corpus: 1,535 files, 11 of them read-only (invalid UTF-8, Latin-1, Windows-1252, UTF-16), 1,380 of them the CommonMark, GFM and GFM extension / regression examples; BOM, CRLF, CR, mixed, no final newline, trailing whitespace, tabs, NUL, 256 KB and 100 KB lines, Kannada / Devanagari / emoji ZWJ, YAML / TOML front matter, footnotes, odd tables, HTML blocks, `[toc]`, math, Typora `<img style="zoom">`, reference links, setext, lazy continuation, mixed list markers. Release run: 60,840 edits tried (48,427 changed text), **0 files differ**. It found 10 bugs, all fixed with a regression test: toml++ aborted on a malformed date-time and on a key starting with a combining mark; word-left and Insert Footnote split a scalar (crash); Delete removed half a CRLF; cmark-gfm's table extension left the paragraph it split off without a position (crash); a NUL byte shifted every parser column after it on its line (wrong ranges; rendered find crashed); rendered Replace All rewrote `[toc]` and half of entities; outline demote of `[^1]: # T` produced overlapping edits; a command rewriting identical bytes made an empty undo step. Known, not fixed: a lone `\r` line break (classic Mac or mixed files) is not a line to editor commands, since the rope's lines end at `\n` (smart Enter writes `\n` there; other bytes are kept); a debug build overflows the main thread's stack projecting ~900 nested block quotes (release handles the 1,000 fixture); and every change in the 1 MB single paragraph re-typesets it, one to two minutes per edit or undo step in release (3,098 s of the run), a layout item rather than a byte one. `LipiCorpusTests` runs the files over 64 KB lighter (decode / encode only in debug).
 
   Perf: after the second round of merges, `LIPI_PERF_GATE=1` (release, load average ~5) passes every row but `open.tables-10kx10`. The emoji shortcode pass had added ~20 ms to that open by copying every table cell's bytes; it now skips text without two colons, and alternating runs put it back at the pre-merge 121–125 ms. That is still above the 102 ms baseline recorded on a quiet machine, and so is the pre-merge build today, so the gate needs a run on an idle machine, then `LIPI_PERF_RECORD=1` for the new rows.
 

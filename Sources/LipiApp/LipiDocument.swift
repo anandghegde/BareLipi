@@ -19,6 +19,13 @@ public final class LipiDocument: NSDocument {
     public private(set) var originalBytes: Data?
     /// The file's state at the last read or write.
     public private(set) var fingerprint: FileFingerprint?
+    /// The text (without BOM) at the last read or write: the common ancestor
+    /// for a three-way merge with an external change (P1-04). A snapshot of
+    /// the persistent rope, so it shares storage with the editor's text
+    /// until edits path-copy it. Nil for unconverted non-UTF-8 files.
+    public internal(set) var mergeBase: LipiRope?
+    /// The external change the conflict bar is about.
+    private var pendingTheirs: (bytes: Data, fingerprint: FileFingerprint)?
     public private(set) var windowController: DocumentWindowController?
     private var monitor: ExternalChangeMonitor?
     private var activationObserver: NSObjectProtocol?
@@ -77,6 +84,7 @@ public final class LipiDocument: NSDocument {
         windowController.editor.imageHandler = self
         addWindowController(windowController)
         self.windowController = windowController
+        if fingerprint != nil, originalBytes == nil { mergeBase = controller.rope }
         updateReadOnlyState()
         if let state = pendingRestore {
             pendingRestore = nil
@@ -142,6 +150,8 @@ public final class LipiDocument: NSDocument {
             isLoading = true
             windowController.reload(text: decoded.text)
             isLoading = false
+            mergeBase = originalBytes == nil ? windowController.controller.rope : nil
+            pendingTheirs = nil
             updateReadOnlyState()
             windowController.content.hide(.externalChange)
             windowController.content.hide(.deleted)
@@ -172,14 +182,15 @@ public final class LipiDocument: NSDocument {
     /// Saves through the §9.3 `AtomicWriter` instead of NSDocument's own
     /// safe-save (which would drop hard links and some metadata).
     public nonisolated override func writeSafely(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType) throws {
-        let (data, refuse, isUTF8) = onMain { () -> (Data, Bool, Bool) in
+        let (data, rope, refuse, isUTF8) = onMain { () -> (Data, LipiRope?, Bool, Bool) in
             // Do not resurrect a file deleted on disk behind the user's back
             // by autosaving; the bar offers Save As.
             let refuse = self.deletedOnDisk && saveOperation == .autosaveInPlaceOperation && url == self.fileURL
             if self.fileURL == nil, saveOperation == .saveOperation || saveOperation == .saveAsOperation {
                 self.adoptUnsavedAssets(savingTo: url)
             }
-            return (self.currentBytes(), refuse, self.format.isUTF8)
+            let rope = self.originalBytes == nil ? self.windowController?.controller.rope : nil
+            return (self.currentBytes(), rope, refuse, self.format.isUTF8)
         }
         if refuse { throw CocoaError(.userCancelled) }
         var options = AtomicWriter.Options()
@@ -191,6 +202,7 @@ public final class LipiDocument: NSDocument {
         case .saveOperation, .saveAsOperation, .autosaveInPlaceOperation:
             onMain {
                 self.fingerprint = outcome.fingerprint
+                self.mergeBase = rope
                 self.deletedOnDisk = false
                 if let monitor = self.monitor {
                     monitor.acknowledge(outcome.fingerprint, url: outcome.resolvedURL)
@@ -279,11 +291,11 @@ public final class LipiDocument: NSDocument {
             content.hide(.fileError)
             deletedOnDisk = false
             if isDocumentEdited {
+                pendingTheirs = (bytes, fingerprint)
                 content.show(NoticeBar(kind: .externalChange, message: "Changed on disk by another application", actions: [
                     NoticeBar.Action("Keep Mine") { [weak self] in self?.keepMine() },
                     NoticeBar.Action("Take Theirs") { [weak self] in self?.takeTheirs() },
-                    // Three-way merge is P1-04 (Phase 2).
-                    NoticeBar.Action("Merge", isEnabled: false) {},
+                    NoticeBar.Action("Merge", isEnabled: canMerge(bytes)) { [weak self] in self?.merge() },
                 ]))
             } else {
                 apply(bytes: bytes, fingerprint: fingerprint)
@@ -317,6 +329,8 @@ public final class LipiDocument: NSDocument {
         isLoading = true
         windowController?.reload(text: decoded.text)
         isLoading = false
+        mergeBase = originalBytes == nil ? windowController?.controller.rope : nil
+        pendingTheirs = nil
         updateChangeCount(.changeCleared)
         updateReadOnlyState()
         windowController?.content.hide(.externalChange)
@@ -327,20 +341,104 @@ public final class LipiDocument: NSDocument {
         // The document stays edited; the next save overwrites the disk
         // without NSDocument's "changed by another application" alert.
         if let fingerprint = monitor?.known { fileModificationDate = fingerprint.stat.modificationDate }
+        // Mine was chosen over what is on disk now, so that is the base a
+        // later external change is merged against.
+        if let theirs = pendingTheirs {
+            let decoded = TextCodec.decode(theirs.bytes)
+            mergeBase = decoded.originalBytes == nil ? LipiRope(decoded.text) : nil
+            fingerprint = theirs.fingerprint
+        }
+        pendingTheirs = nil
     }
 
     private func takeTheirs() {
-        guard let url = monitor?.url ?? fileURL.map(AtomicWriter.resolve) else { return }
+        guard let (bytes, fingerprint) = readTheirs() else { return }
+        apply(bytes: bytes, fingerprint: fingerprint)
+    }
+
+    /// The file's current bytes, acknowledged as the known state.
+    private func readTheirs() -> (Data, FileFingerprint)? {
+        guard let url = monitor?.url ?? fileURL.map(AtomicWriter.resolve) else { return nil }
         do {
             let bytes = try LipiDocument.readCoordinated(url)
             let stat = try FileStat.of(path: url.path)
             let fingerprint = FileFingerprint(stat: stat, bytes: bytes)
             monitor?.acknowledge(fingerprint)
             fileModificationDate = stat.modificationDate
-            apply(bytes: bytes, fingerprint: fingerprint)
+            return (bytes, fingerprint)
         } catch {
             handle(.unreadable(message: error.localizedDescription))
+            return nil
         }
+    }
+
+    // MARK: Three-way merge (P1-04)
+
+    /// Merge needs a base and UTF-8 on both sides.
+    private func canMerge(_ theirs: Data) -> Bool {
+        mergeBase != nil && !isReadOnly && TextCodec.decode(theirs).originalBytes == nil
+    }
+
+    /// The line ending conflict markers use: the document's, LF when mixed.
+    var markerNewline: [UInt8] {
+        switch format.lineEnding {
+        case .crlf: [0x0D, 0x0A]
+        case .cr: [0x0D]
+        case .lf, .none, .mixed: [0x0A]
+        }
+    }
+
+    /// Merges the file's current text into the editor's against the base
+    /// (the text last read or written). The result is one undo step whose
+    /// edits touch only the regions that changed; conflicts are written with
+    /// `<<<<<<< Mine` / `=======` / `>>>>>>> Theirs` markers and counted in
+    /// the bar. The disk's text becomes the new base.
+    func merge() {
+        guard let windowController, let base = mergeBase, let (bytes, fingerprint) = readTheirs() else { return }
+        let decoded = TextCodec.decode(bytes)
+        guard decoded.originalBytes == nil else { return }
+        let controller = windowController.controller
+        let mine = Array(controller.rope.string.utf8)
+        let result = ThreeWayMerge(base: Array(base.string.utf8), mine: mine, theirs: Array(decoded.text.utf8),
+                                   newline: markerNewline)
+        self.fingerprint = fingerprint
+        mergeBase = LipiRope(decoded.text)
+        pendingTheirs = nil
+        let content = windowController.content
+        content.hide(.externalChange)
+        guard !result.replacements.isEmpty else { return }
+        let edits = result.replacements.map {
+            Edit(replacing: $0.range, with: String(decoding: $0.bytes, as: UTF8.self))
+        }
+        let selection = controller.selection
+        let anchor = CaretRemap.map(selection.anchor, from: mine, to: result.merged)
+        let head = CaretRemap.map(selection.head, from: mine, to: result.merged)
+        let y = windowController.scrollY
+        controller.perform(EditPlan(edits: edits, anchor: anchor, head: head))
+        if result.isClean {
+            windowController.scroll(toY: y)
+            return
+        }
+        let count = result.conflictCount
+        content.show(NoticeBar(kind: .externalChange,
+                               message: "Merged with \(count) \(count == 1 ? "conflict" : "conflicts"), marked <<<<<<< Mine … >>>>>>> Theirs",
+                               actions: [
+                                   NoticeBar.Action("Next Conflict") { [weak self] in self?.revealNextConflict() },
+                                   NoticeBar.Action("Done") { [weak self] in self?.windowController?.content.hide(.externalChange) },
+                               ]))
+        if let first = ThreeWayMerge.conflictStarts(in: result.merged).first { controller.moveCaret(to: first) }
+    }
+
+    /// Moves the caret to the next conflict marker after it, wrapping round.
+    func revealNextConflict() {
+        guard let controller = windowController?.controller else { return }
+        let starts = ThreeWayMerge.conflictStarts(in: Array(controller.rope.string.utf8))
+        guard let first = starts.first else {
+            windowController?.content.hide(.externalChange)
+            return
+        }
+        let caret = controller.selection.head
+        controller.moveCaret(to: starts.first { $0 > caret } ?? first)
     }
 
     // MARK: NSFilePresenter

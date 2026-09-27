@@ -14787,8 +14787,13 @@ TOML_IMPL_NAMESPACE_START
 		{
 			return_if_error({});
 			assert_not_eof();
-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
 			push_parse_scope("time"sv);
+
+			// BareLipi patch: a date-time's time part can start with any
+			// character ("2024-05-01Tx"); upstream only asserts (abort in
+			// debug, undefined behaviour in release). Report it instead.
+			if (!is_decimal_digit(*cp))
+				set_error_and_return_default("expected 2-digit hour, saw '"sv, to_sv(*cp), "'"sv);
 
 			static constexpr size_t max_digits = 64; // far more than necessary but needed to allow fractional
 													 // millisecond truncation per the spec

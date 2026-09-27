@@ -58,6 +58,20 @@ struct FrontMatterDataTests {
         #expect(toml.error?.contains("line 3") == true)
     }
 
+    /// A date-time whose time part does not start with a digit (typing
+    /// into `date = 2024-05-01T10:00:00Z`) tripped toml++'s
+    /// `TOML_ASSERT_ASSUME` in `parse_time`: an abort in debug builds and
+    /// undefined behaviour in release. It is now a parse error.
+    @Test(arguments: [
+        "date = 2024-05-01Tx0:00:00Z\n", "date = 2024-05-01T\n", "date = 2024-05-01 x\n",
+        "date = 2024-05-01t:00\n", "d = 1979-05-27T*\n", "d = 1979-05-27T-07:00\n",
+        "[a]\nd = 2024-05-01TZ\n",
+    ])
+    func malformedTOMLDateTimeIsAnError(_ source: String) {
+        let d = FrontMatterData.parse(source, kind: .toml)
+        #expect(d.isMalformed)
+    }
+
     @Test func emptyIsWellFormed() {
         #expect(!FrontMatterData.parse("", kind: .yaml).isMalformed)
         #expect(!FrontMatterData.parse("# only a comment\n", kind: .yaml).isMalformed)

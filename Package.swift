@@ -108,6 +108,8 @@ let package = Package(
         ),
         .executableTarget(name: "lipi-bench", dependencies: ["LipiCore", "LipiLayout", "LipiFixtures"]),
         .executableTarget(name: "lipi-fixtures", dependencies: ["LipiFixtures"]),
+        // The byte-preservation check over any folder (ByteRoundTrip).
+        .executableTarget(name: "lipi-roundtrip", dependencies: ["LipiApp", "LipiFixtures"]),
         .testTarget(
             name: "LipiCoreTests",
             dependencies: ["LipiCore"],
@@ -118,6 +120,11 @@ let package = Package(
         .testTarget(
             name: "LipiAppTests",
             dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiExport", "LipiHighlight", "LipiLayout"]
+        ),
+        // The byte-preservation exit check over the corpus (ByteCorpus).
+        .testTarget(
+            name: "LipiCorpusTests",
+            dependencies: ["LipiApp", "LipiCore", "LipiEditor", "LipiFixtures"]
         ),
         // XCTest performance harness: one test per row of PRD §9.1.
         .testTarget(

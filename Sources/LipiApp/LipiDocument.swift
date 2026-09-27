@@ -55,6 +55,24 @@ public final class LipiDocument: NSDocument {
     public internal(set) lazy var assets = AssetStore(documentURL: { [weak self] in self?.fileURL },
                                                      text: { [weak self] in self?.frontMatterText ?? "" })
 
+    /// Save As, Move To and Rename set this; the editor resolves the
+    /// document's relative image paths against it (P0-07).
+    public override var fileURL: URL? {
+        didSet {
+            // Saves may set it off the main thread.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { syncDocumentURL() }
+            } else {
+                Task { @MainActor [weak self] in self?.syncDocumentURL() }
+            }
+        }
+    }
+
+    private func syncDocumentURL() {
+        guard let controller = windowController?.editor.controller, controller.documentURL != fileURL else { return }
+        controller.documentURL = fileURL
+    }
+
     // MARK: Windows
 
     public override func makeWindowControllers() {
@@ -62,6 +80,7 @@ public final class LipiDocument: NSDocument {
         var mark = CACurrentMediaTime()
         let controller = EditorController(text: pendingText, engine: tracker.options.engine, theme: tracker.options.theme,
                                           zoom: tracker.options.zoom, viewportWidth: 1100)
+        controller.documentURL = fileURL
         tracker.phases.controller = CACurrentMediaTime() - mark
         mark = CACurrentMediaTime()
         pendingText = ""

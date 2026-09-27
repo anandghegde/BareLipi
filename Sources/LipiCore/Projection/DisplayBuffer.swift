@@ -162,6 +162,9 @@ public struct DisplayBlock: Sendable, Hashable {
     /// A fenced code block with no closing fence: it runs to the end of its
     /// container (the code header shows an "unclosed" pill, §6.5).
     public var isUnclosedFence: Bool
+    /// The picture this block draws (an image island, P0-07); nil for
+    /// every other block and always in source mode.
+    public var image: DisplayImage?
     /// Deterministic hash of the visible content (text, runs, role, context,
     /// reveal state) for layout caching; independent of the block's position.
     public var layoutKey: UInt64
@@ -170,9 +173,10 @@ public struct DisplayBlock: Sendable, Hashable {
     var rowKeys: [UInt64] = []
 
     public init(id: NodeID, sourceRange: Range<Int>, role: BlockRole, context: BlockContext, isRevealed: Bool,
-                cells: [DisplayCell], table: TableShape? = nil, isUnclosedFence: Bool = false) {
+                cells: [DisplayCell], table: TableShape? = nil, isUnclosedFence: Bool = false, image: DisplayImage? = nil) {
         self.id = id
         self.isUnclosedFence = isUnclosedFence
+        self.image = image
         self.sourceRange = sourceRange
         self.role = role
         self.context = context
@@ -193,6 +197,7 @@ public struct DisplayBlock: Sendable, Hashable {
         context = old.context
         isRevealed = old.isRevealed
         isUnclosedFence = false
+        image = nil
         self.cells = cells
         table = old.table
         rowKeys = old.rowKeys
@@ -218,6 +223,7 @@ public struct DisplayBlock: Sendable, Hashable {
         h.combine(context)
         h.combine(isRevealed ? 1 : 0)
         if isUnclosedFence { h.combine(2) }
+        if let image { h.combine(image) }
         if let table {
             h.combine(table.columns); h.combine(table.rows); for a in table.alignments { h.combine(a) }
             for k in rowKeys { h.combine(Int(bitPattern: UInt(k))) }
@@ -281,6 +287,19 @@ struct FNV1a {
             combine(run.range.lowerBound); combine(run.range.upperBound); combine(Int(run.style.rawValue))
         }
         combine(0x1F)
+    }
+    mutating func combine(_ image: DisplayImage) {
+        combine(0x49)
+        combine(image.source); combine(image.alt); combine(image.title)
+        combine(image.zoom ?? -1)
+        for length in [image.width, image.height] {
+            switch length {
+            case nil: combine(0)
+            case .pixels(let v)?: combine(1); combine(Int(v.bitPattern))
+            case .percent(let v)?: combine(2); combine(Int(v.bitPattern))
+            }
+        }
+        combine(image.isFolded ? 1 : 0)
     }
     mutating func combine(_ role: BlockRole) {
         switch role {

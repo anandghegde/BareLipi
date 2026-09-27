@@ -1,4 +1,5 @@
 import Foundation
+import LipiCore
 
 /// How HTML export treats the document's local images (§6.14): links
 /// rebased so they still resolve from where the page is written, files
@@ -115,20 +116,7 @@ extension HTMLExporter {
     /// The local file an image `src` names, or nil for remote and data URLs
     /// (and for relative paths when there is no document folder).
     static func localFile(_ src: String, relativeTo directory: URL?) -> URL? {
-        if src.isEmpty || src.hasPrefix("#") || src.hasPrefix("//") { return nil }
-        if let colon = src.firstIndex(of: ":"), src[..<colon].allSatisfy({ $0.isLetter || $0.isNumber || "+-.".contains($0) }),
-           src.distance(from: src.startIndex, to: colon) > 1 {
-            // A scheme: only file URLs are local.
-            guard src.lowercased().hasPrefix("file:"), let url = URL(string: src), url.isFileURL else { return nil }
-            return url.standardizedFileURL
-        }
-        var path = src
-        if let cut = path.firstIndex(where: { $0 == "?" || $0 == "#" }) { path = String(path[..<cut]) }
-        path = path.removingPercentEncoding ?? path
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path).standardizedFileURL }
-        if path.hasPrefix("~/") { return URL(fileURLWithPath: NSString(string: path).expandingTildeInPath).standardizedFileURL }
-        guard let directory else { return nil }
-        return URL(fileURLWithPath: path, relativeTo: directory).standardizedFileURL
+        ImageSource.localFile(src, relativeTo: directory)
     }
 
     /// `file` relative to `directory`, percent-encoded for a URL.

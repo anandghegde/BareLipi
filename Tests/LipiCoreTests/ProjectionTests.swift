@@ -352,8 +352,9 @@ struct ProjectionFoldingTests {
         #expect(block.cells[0].text == "see label and <http://a.b> and ref and short")
         #expect(run(block, .link) == [4..<9, 14..<26, 31..<34, 39..<44])
         #expect(run(block, .syntax) == [14..<15, 25..<26])
-        #expect(displayText("![alt text](pic.png)") == "alt text")
-        #expect(run(displayBlock("![alt](p)"), .image) == [0..<3])
+        // An image among text folds to its alt text; alone it is an island.
+        #expect(displayText("see ![alt text](pic.png)") == "see alt text")
+        #expect(run(displayBlock("a ![alt](p)"), .image) == [2..<5])
         #expect(displayText("[](x)") == "")
     }
 

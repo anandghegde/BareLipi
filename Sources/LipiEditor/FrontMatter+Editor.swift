@@ -9,6 +9,7 @@ extension EditorController {
             frontMatter = nil
             frontMatterKey = nil
             projection.frontMatterWarning = nil
+            if layout.imageBase.root != nil { updateImageBase() }
             return
         }
         let key = (id: first.block.id, revision: first.revision, length: first.length)
@@ -16,6 +17,7 @@ extension EditorController {
         frontMatterKey = key
         frontMatter = FrontMatterData.parse(index: index, rope: rope)
         projection.frontMatterWarning = frontMatter?.error
+        updateImageBase()
     }
 
     /// The document title for the outline: the front matter `title`.

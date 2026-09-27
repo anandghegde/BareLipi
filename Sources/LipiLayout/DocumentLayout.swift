@@ -90,6 +90,13 @@ public final class DocumentLayout {
             invalidateAllLayouts()
         }
     }
+    /// Decodes the pictures of image islands (P0-07); nil draws every image
+    /// as its placeholder.
+    public var images: ImageStore? = .shared
+    /// Where image paths start (the document folder, `typora-root-url`).
+    public var imageBase = ImageBase() {
+        didSet { if imageBase != oldValue { invalidateImageBlocks() } }
+    }
     /// Sideways scroll of unwrapped code blocks, by block.
     var codeScroll: [NodeID: CGFloat] = [:]
     public private(set) var stats = Stats()
@@ -168,6 +175,36 @@ public final class DocumentLayout {
             }
         }
         return any
+    }
+
+    /// Drops the laid-out entries holding an image island so they pick up
+    /// decoded image sizes (`ImageStore.didLoad`). Returns whether any
+    /// entry was dropped; the heights stay as estimates until re-laid out.
+    @discardableResult
+    public func invalidateImageBlocks() -> Bool {
+        var any = false
+        for i in layouts.indices where layouts[i] != nil && i < projection.entries.count {
+            if projection.entries[i].blocks.contains(where: { $0.image != nil }) {
+                layouts[i] = nil
+                any = true
+            }
+        }
+        return any
+    }
+
+    /// Whether any laid-out image island's picture changed state since it
+    /// was laid out (its size or failure became known).
+    public func imageLayoutsAreStale() -> Bool {
+        guard let images else { return false }
+        for layout in layouts {
+            guard let layout else { continue }
+            for block in layout.blocks {
+                guard let chrome = block.image else { continue }
+                let status = images.status(of: chrome.image, base: chrome.base)
+                if chrome.content != LayoutEngine.content(for: status) { return true }
+            }
+        }
+        return false
     }
 
     // MARK: Projection updates
@@ -257,6 +294,15 @@ public final class DocumentLayout {
                 let stamp = typesetter.highlightStamp(of: block)
                 if stamp != 0 { blockKey = (blockKey ^ stamp) &* 0x100_0000_01B3 }
             }
+            if let image = block.image {
+                // The picture's size lands after the text (`ImageStore`).
+                let status = images?.status(of: image, base: imageBase) ?? .pending
+                var h = FNV()
+                h.combine(Int(Int64(bitPattern: status.stamp)))
+                h.combine(imageBase.documentDirectory?.path ?? "")
+                h.combine(imageBase.root?.path ?? "")
+                blockKey = (blockKey ^ h.value) &* 0x100_0000_01B3
+            }
             let key = LayoutKey(layoutKey: blockKey, width: isWide ? max(measure, wideWidth) : measure, themeRevision: themeRevision)
             let layout: BlockLayout
             if let cached = cache.layout(for: key) {
@@ -268,7 +314,8 @@ public final class DocumentLayout {
                     prior = previous.blocks[b]
                 }
                 layout = LayoutEngine.layout(block, typesetter: typesetter, measure: measure, wideWidth: wideWidth,
-                                             previous: prior, growOnly: growOnlyEntry == i, codeOptions: codeOptions)
+                                             previous: prior, growOnly: growOnlyEntry == i, codeOptions: codeOptions,
+                                             images: images, imageBase: imageBase)
                 cache.insert(layout, for: key)
                 stats.blocksLaidOut += 1
             }
@@ -346,6 +393,15 @@ public final class DocumentLayout {
         frame.origin.x += x(of: block) - codeScrollOffset(of: block)
         frame.origin.y += CGFloat(tree.y(of: position.entry)) + entry.blockTops[position.block]
         return frame
+    }
+
+    /// Frame of an image island's picture in document coordinates, or nil
+    /// when the block is not an image.
+    public func imageFrame(entry e: Int, block b: Int) -> CGRect? {
+        let entry = ensureLayout(e)
+        guard b < entry.blocks.count, let image = entry.blocks[b].image else { return nil }
+        sync(e, entry)
+        return image.frame.offsetBy(dx: x(of: entry.blocks[b]), dy: CGFloat(tree.y(of: e)) + entry.blockTops[b])
     }
 
     public func cell(at position: DisplayPosition) -> CellLayout {

@@ -74,6 +74,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         controller.setViewportWidth(frame.width)
         controller.onChange = { [weak self] change in self?.didChange(change) }
         controller.onRedisplay = { [weak self] in self?.needsDisplay = true }
+        controller.onImagesChanged = { [weak self] in self?.imagesDidChange() }
         caret.onToggle = { [weak self] in self?.invalidateCaret() }
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
@@ -204,12 +205,19 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         return true
     }
 
-    // MARK: Layout ahead of scrolling (one screen of overscan, §7.4)
+    /// Decoded images changed island heights (P0-07): re-lay out what is
+    /// on screen, keeping the first visible entry where it was.
+    func imagesDidChange() {
+        anchoringViewport { controller.prepare(visibleRect) }
+        needsDisplay = true
+    }
 
-    public override func prepareContent(in rect: NSRect) {
+    /// Runs `body` (which may change entry heights), re-sizes the view, and
+    /// scrolls so the first visible entry stays where it was.
+    private func anchoringViewport(_ body: () -> Void) {
         let anchorEntry = controller.engine == .lipi ? controller.layout.entryIndex(atY: visibleRect.minY) : nil
         let anchorY = anchorEntry.map { controller.layout.y(ofEntry: $0) }
-        controller.prepare(rect)
+        body()
         syncFrameHeight()
         // Entries measured above the viewport shift it; keep the first
         // visible entry where it was (caret-anchored reflow).
@@ -222,6 +230,12 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
                 enclosingScrollView?.reflectScrolledClipView(clip)
             }
         }
+    }
+
+    // MARK: Layout ahead of scrolling (one screen of overscan, §7.4)
+
+    public override func prepareContent(in rect: NSRect) {
+        anchoringViewport { controller.prepare(rect) }
         super.prepareContent(in: rect)
     }
 

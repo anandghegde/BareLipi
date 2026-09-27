@@ -24,10 +24,11 @@ extension DocumentWindowController {
         if code { controller.codeOptions = settings.codeOptions }
         let counting = settings.countOptions
         if counts.options != counting { counts.options = counting }
-        // The store reads both at creation; this keeps an existing one current.
+        // The store reads these at creation; this keeps an existing one current.
         if let assets = (document as? LipiDocument)?.assets {
             assets.naming = settings.imageNaming
             assets.convertHEIC = settings.convertHEIC
+            assets.maxWidth = settings.imageMaxWidth
         }
     }
 }

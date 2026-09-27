@@ -194,16 +194,22 @@ extension MarkdownCommands {
         guard items[range].allSatisfy({ (1...6).contains($0.level + delta) }) else { return nil }
         var b = PlanBuilder()
         for item in items[range] {
-            let line = doc.prefix(ofLineAt: item.range.lowerBound)
             let hashes = String(repeating: "#", count: item.level + delta)
-            if let heading = line.heading {
-                b.replace(heading, hashes)
+            // The heading block starts at its `#` run (ATX) or its text
+            // (setext), after any container prefix: a line prefix does not
+            // know footnote definitions (`[^1]: # T`).
+            let start = item.range.lowerBound
+            let lineEnd = doc.lineContentEnd(start)
+            let run = doc.bytes(start..<min(lineEnd, start + 8))
+            let n = run.prefix { $0 == 0x23 }.count
+            if (1...6).contains(n), n == run.count || run[n] == 0x20 || run[n] == 0x09 {
+                b.replace(start..<(start + n), hashes)
             } else {
                 // Setext: drop the underline, prefix hashes.
                 let underline = doc.lineStart(item.range.upperBound)
                 let contentEnd = doc.lineContentEnd(underline - 1)
                 b.replace(contentEnd..<doc.lineContentEnd(item.range.upperBound), "")
-                b.insert(hashes + " ", at: line.contentStart)
+                b.insert(hashes + " ", at: start)
             }
         }
         let p = selection.head

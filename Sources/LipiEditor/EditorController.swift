@@ -46,6 +46,11 @@ public final class EditorController {
     /// Called when something outside the pipeline changed how the document
     /// looks without moving it (code highlights landing): redraw only.
     public var onRedisplay: (() -> Void)?
+    /// Called with every change's edits just before they reach the buffer,
+    /// in the coordinates before the change (a typed or replaced range, or
+    /// an `EditPlan`'s edits). Undo, redo and `load` are not reported. The
+    /// byte-preservation check (`ByteRoundTrip`) diffs against these.
+    public var onEdits: (([Edit]) -> Void)?
     nonisolated(unsafe) private var highlightObserver: NSObjectProtocol?
     /// Hybrid (§6.1) or source (§6.2) presentation. Edits are identical in both.
     public private(set) var mode: EditorMode = .hybrid
@@ -255,7 +260,9 @@ public final class EditorController {
     /// Steps 1–3: buffer, parser, caret. Leaves `marked` to the caller.
     private func applyEdit(_ range: Range<Int>, _ text: String, caretAfter: Int?) -> Delta {
         blockSelectionRange = nil
-        let delta = buffer.apply(Edit(replacing: range, with: text))
+        let edit = Edit(replacing: range, with: text)
+        onEdits?([edit])
+        let delta = buffer.apply(edit)
         parser.apply(delta, then: buffer.rope)
         selection = SelectionModel(caret: caretAfter ?? (range.lowerBound + text.utf8.count))
         return delta
@@ -471,20 +478,27 @@ public final class EditorController {
         pairClosers.removeAll()
         blockSelectionRange = nil
         let clampOffset = { (o: Int) in self.buffer.rope.floorScalarBoundary(max(0, min(o, self.buffer.count))) }
-        guard !plan.edits.isEmpty else {
+        // An edit that writes the bytes already there changes nothing; left
+        // in, a plan of only such edits made an undo step that did nothing.
+        let edits = plan.edits.filter { edit in
+            edit.range.length != edit.insertedBytes || edit.range.upperBound.byte > buffer.count
+                || buffer.rope.string(in: edit.range) != edit.replacement
+        }
+        guard !edits.isEmpty else {
             // A pure selection change (table cell navigation, block selection).
             selection = SelectionModel(anchor: clampOffset(plan.anchor), head: clampOffset(plan.head))
             lastTypingCaret = selection.head
             return refresh(textChanged: false, started: started)
         }
+        onEdits?(edits)
         buffer.beginUndoGroup(selection: undoSelection)
         // Disjoint edits (Replace All, list and table commands) go in as one
         // batch: one pass over the rope and the block index, and an undo step
         // that replays in one pass too.
-        if plan.edits.count > 1, let deltas = buffer.applyBatch(plan.edits) {
+        if edits.count > 1, let deltas = buffer.applyBatch(edits) {
             parser.apply(deltas)
         } else {
-            let ordered = plan.edits.sorted {
+            let ordered = edits.sorted {
                 $0.range.lowerBound.byte != $1.range.lowerBound.byte ? $0.range.lowerBound.byte > $1.range.lowerBound.byte
                     : $0.range.upperBound.byte > $1.range.upperBound.byte
             }
@@ -840,9 +854,9 @@ public final class EditorController {
             let text = displayCell(at: p).text as NSString
             let d = CaretGeometry.previous(before: min(p.offset, text.length), in: text)
             let src = projection.sourceOffset(for: DisplayPosition(entry: p.entry, block: p.block, cell: p.cell, offset: d))
-            if src < offset { return src }
+            if src < offset { return outsideCRLF(src, forward: false) }
         }
-        return buffer.rope.floorScalarBoundary(offset - 1)
+        return outsideCRLF(buffer.rope.floorScalarBoundary(offset - 1), forward: false)
     }
 
     /// Source offset one caret stop after `offset`.
@@ -854,20 +868,28 @@ public final class EditorController {
             if p.offset < text.length {
                 let d = CaretGeometry.next(after: p.offset, in: text)
                 let src = projection.sourceOffset(for: DisplayPosition(entry: p.entry, block: p.block, cell: p.cell, offset: d))
-                if src > offset { return min(src, end) }
+                if src > offset { return outsideCRLF(min(src, end), forward: true) }
             }
         }
         var o = offset + 1
         while o < end, !buffer.rope.isScalarBoundary(at: o) { o += 1 }
-        return min(o, end)
+        return outsideCRLF(min(o, end), forward: true)
+    }
+
+    /// `offset`, moved off the middle of a `\r\n` pair (a caret stop
+    /// between them would delete or split half the line ending).
+    func outsideCRLF(_ offset: Int, forward: Bool) -> Int {
+        guard offset > 0, offset < buffer.count,
+              buffer.rope.byte(at: offset - 1) == 0x0D, buffer.rope.byte(at: offset) == 0x0A else { return offset }
+        return forward ? offset + 1 : offset - 1
     }
 
     /// Word boundaries on the source line (whitespace-delimited).
     public func wordBoundary(before offset: Int) -> Int {
         guard offset > 0 else { return 0 }
-        let line = buffer.rope.lineRange(buffer.rope.line(at: max(0, offset - 1)))
+        let line = buffer.rope.lineRange(buffer.rope.line(at: buffer.rope.floorScalarBoundary(offset - 1)))
         let start = line.lowerBound
-        if offset <= start { return buffer.rope.floorScalarBoundary(offset - 1) }
+        if offset <= start { return outsideCRLF(buffer.rope.floorScalarBoundary(offset - 1), forward: false) }
         let bytes = Array(buffer.rope.string(in: start..<offset).utf8)
         var i = bytes.count
         while i > 0, isSpace(bytes[i - 1]) { i -= 1 }

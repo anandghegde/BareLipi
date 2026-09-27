@@ -35,8 +35,8 @@ extension MarkdownCommands {
         let label = "[^\(n)]"
         let at = range.upperBound
         let end = doc.count
-        let eol = doc.eol(near: max(0, end - 1))
-        let text = doc.string(max(0, end - 2 * eol.utf8.count)..<end)
+        let eol = doc.eol(near: end)
+        let text = doc.string(doc.clamped(end - 2 * eol.utf8.count)..<end)
         let lead: String
         if end == 0 || text.hasSuffix(eol + eol) {
             lead = ""

@@ -134,11 +134,16 @@ struct CommandDocument {
     func string(_ r: Range<Int>) -> String { rope.string(in: r) }
     func bytes(_ r: Range<Int>) -> [UInt8] { Array(rope.string(in: r).utf8) }
 
-    func lineStart(_ p: Int) -> Int { rope.lineStart(rope.line(at: min(max(p, 0), count))) }
+    /// `p` clamped to the document and floored to a scalar boundary (the
+    /// rope's line lookup requires one; a `\n` is one byte, so flooring
+    /// never changes the line).
+    func clamped(_ p: Int) -> Int { rope.floorScalarBoundary(min(max(p, 0), count)) }
+
+    func lineStart(_ p: Int) -> Int { rope.lineStart(rope.line(at: clamped(p))) }
 
     /// End of the line's content, before `\n` or `\r\n`.
     func lineContentEnd(_ p: Int) -> Int {
-        let r = rope.lineRange(rope.line(at: min(max(p, 0), count)))
+        let r = rope.lineRange(rope.line(at: clamped(p)))
         var e = r.upperBound
         if e > r.lowerBound, byte(e - 1) == 0x0A {
             e -= 1
@@ -148,7 +153,7 @@ struct CommandDocument {
     }
 
     /// After the line's terminator (the next line's start).
-    func lineEnd(_ p: Int) -> Int { rope.lineRange(rope.line(at: min(max(p, 0), count))).upperBound }
+    func lineEnd(_ p: Int) -> Int { rope.lineRange(rope.line(at: clamped(p))).upperBound }
 
     /// The terminator of the line containing `p`, if it has one.
     func terminator(at p: Int) -> String? {

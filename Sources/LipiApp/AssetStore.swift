@@ -131,6 +131,41 @@ public enum AssetPolicy {
         return (data, type.preferredFilenameExtension ?? "img")
     }
 
+    /// `data` (a file of extension `ext`) scaled down to `maxWidth` pixels
+    /// wide, aspect ratio kept, in the same format; nil when it is no wider
+    /// (after EXIF orientation), animated, or a format ImageIO cannot write
+    /// (WebP, SVG…), which are then stored as they are.
+    public static func downscale(_ data: Data, ext: String, maxWidth: Int) -> Data? {
+        guard maxWidth > 0,
+              let type = UTType(filenameExtension: ext),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, w > 0, h > 0 else { return nil }
+        let orientation = (props[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let (width, height) = orientation >= 5 && orientation <= 8 ? (h, w) : (w, h)
+        guard width > maxWidth else { return nil }
+        let writable = CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []
+        guard writable.contains(type.identifier) else { return nil }
+        let long = Int((Double(maxWidth) * Double(max(width, height)) / Double(width)).rounded())
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, long),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, type.identifier as CFString, 1, nil) else { return nil }
+        var destProps: [CFString: Any] = [:]
+        if type.conforms(to: .jpeg) || type.conforms(to: .heic) || type.conforms(to: .heif) {
+            destProps[kCGImageDestinationLossyCompressionQuality] = 0.9
+        }
+        CGImageDestinationAddImage(dest, image, destProps as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
+    }
+
     static func transcode(_ data: Data, to type: UTType, quality: Double?) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
@@ -152,6 +187,7 @@ public final class AssetStore {
     /// Defaults keys (Settings → Images).
     public static let namingKey = "ImageNaming"
     public static let convertHEICKey = "ConvertHEICToJPEG"
+    public static let maxWidthKey = "ImageMaxWidth"
 
     /// Where untitled documents keep images.
     public let unsavedFolder: URL
@@ -159,6 +195,9 @@ public final class AssetStore {
     public var text: () -> String
     public var naming: AssetPolicy.Naming
     public var convertHEIC: Bool
+    /// Pasted and dropped images wider than this (pixels) are scaled down
+    /// to it; 0, the default, keeps them as they are.
+    public var maxWidth: Int
     public var now: () -> Date = Date.init
     let fileManager = FileManager.default
 
@@ -171,6 +210,7 @@ public final class AssetStore {
         let defaults = UserDefaults.standard
         naming = AssetPolicy.Naming(rawValue: defaults.string(forKey: AssetStore.namingKey) ?? "") ?? .timestamp
         convertHEIC = defaults.object(forKey: AssetStore.convertHEICKey) as? Bool ?? true
+        maxWidth = max(0, defaults.integer(forKey: AssetStore.maxWidthKey))
     }
 
     /// The folder new images go to now.
@@ -196,7 +236,8 @@ public final class AssetStore {
                 type = UTType(id) ?? .png
                 originalName = nil
             }
-            guard let (data, ext) = AssetPolicy.encode(raw, type: type, convertHEIC: convertHEIC) else { continue }
+            guard var (data, ext) = AssetPolicy.encode(raw, type: type, convertHEIC: convertHEIC) else { continue }
+            if let smaller = AssetPolicy.downscale(data, ext: ext, maxWidth: maxWidth) { data = smaller }
             let name: String
             if naming == .original, let originalName {
                 name = originalName + "." + ext

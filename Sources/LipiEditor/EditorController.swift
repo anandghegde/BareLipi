@@ -52,6 +52,15 @@ public final class EditorController {
     /// byte-preservation check (`ByteRoundTrip`) diffs against these.
     public var onEdits: (([Edit]) -> Void)?
     nonisolated(unsafe) private var highlightObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var imageObserver: NSObjectProtocol?
+    /// Called when decoded images changed the size of laid-out blocks
+    /// (P0-07): the view re-sizes and keeps the viewport anchored.
+    public var onImagesChanged: (() -> Void)?
+    /// The document's file (nil when untitled): image paths resolve against
+    /// its folder, and `/…` paths under its `typora-root-url`.
+    public var documentURL: URL? {
+        didSet { if documentURL != oldValue { updateImageBase() } }
+    }
     /// Hybrid (§6.1) or source (§6.2) presentation. Edits are identical in both.
     public private(set) var mode: EditorMode = .hybrid
     /// Settings the commands read (emphasis marker, hard break, auto-pair).
@@ -96,10 +105,43 @@ public final class EditorController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.highlightsDidChange() }
         }
+        imageObserver = NotificationCenter.default.addObserver(
+            forName: ImageStore.didLoad, object: nil, queue: .main
+        ) { [weak self] note in
+            let store = note.object as? ImageStore
+            MainActor.assumeIsolated {
+                guard let self, store === self.layout.images else { return }
+                self.imagesDidLoad()
+            }
+        }
     }
 
     deinit {
         if let highlightObserver { NotificationCenter.default.removeObserver(highlightObserver) }
+        if let imageObserver { NotificationCenter.default.removeObserver(imageObserver) }
+    }
+
+    /// An image finished decoding (P0-07): re-lay out the islands whose
+    /// size changed, or just redraw when only a bitmap landed.
+    func imagesDidLoad() {
+        guard engine == .lipi else { return }
+        if layout.imageLayoutsAreStale() {
+            layout.invalidateImageBlocks()
+            if let onImagesChanged { onImagesChanged() } else { onRedisplay?() }
+        } else {
+            onRedisplay?()
+        }
+    }
+
+    /// Where image paths start: the document folder and its front matter's
+    /// `typora-root-url`, resolved the way pasted images are linked.
+    func updateImageBase() {
+        let directory = documentURL?.deletingLastPathComponent()
+        var root: URL? = nil
+        if let directory, let value = frontMatter?.typoraRootURL, !value.isEmpty {
+            root = ImageSource.rootDirectory(value, documentDirectory: directory)
+        }
+        layout.imageBase = ImageBase(documentDirectory: directory, root: root)
     }
 
     /// Background highlighting finished (P0-05): re-typeset the code blocks

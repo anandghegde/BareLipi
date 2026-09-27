@@ -251,7 +251,7 @@ extension EditorView {
         accessibilityIslands()
     }
 
-    /// Child elements for the code blocks and tables of the entries on
+    /// Child elements for the code blocks, tables and images of the entries on
     /// screen (or of every entry when `all` is set: tests).
     public func accessibilityIslands(all: Bool = false) -> [NSAccessibilityElement] {
         guard controller.engine == .lipi else { return [] }
@@ -279,7 +279,9 @@ extension EditorView {
                     let cells = (0..<block.cells.count).map { cellText(entry: e, block: b, cell: $0, in: text) ?? block.cells[$0].text }
                     out.append(TableIslandElement(view: self, entry: e, block: b, shape: shape, cells: cells))
                 default:
-                    break
+                    if let image = block.image {
+                        out.append(ImageIslandElement(view: self, entry: e, block: b, label: image.alt))
+                    }
                 }
             }
         }
@@ -297,6 +299,13 @@ extension EditorView {
     func accessibilityFrame(ofCell position: DisplayPosition) -> NSRect {
         guard position.entry < controller.projection.entries.count else { return .zero }
         return screenRect(controller.layout.cellFrame(at: position))
+    }
+
+    /// Screen frame of an image island's picture.
+    func accessibilityFrame(ofImageIn entry: Int, block: Int) -> NSRect {
+        guard entry < controller.projection.entries.count,
+              let frame = controller.layout.imageFrame(entry: entry, block: block) else { return .zero }
+        return screenRect(frame)
     }
 
     // MARK: Notifications
@@ -332,6 +341,32 @@ final class CodeIslandElement: NSAccessibilityElement {
         guard let view else { return .zero }
         let p = position
         return MainActor.assumeIsolated { view.accessibilityFrame(ofCell: p) }
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+}
+
+/// An image drawn inline (P0-07): an `AXImage` labelled with its alt text.
+final class ImageIslandElement: NSAccessibilityElement {
+    private weak var view: EditorView?
+    let entry: Int
+    let block: Int
+
+    @MainActor
+    init(view: EditorView, entry: Int, block: Int, label: String) {
+        self.view = view
+        self.entry = entry
+        self.block = block
+        super.init()
+        setAccessibilityParent(view)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel(label.isEmpty ? "Image" : label)
+    }
+
+    override func accessibilityFrame() -> NSRect {
+        guard let view else { return .zero }
+        let e = entry, b = block
+        return MainActor.assumeIsolated { view.accessibilityFrame(ofImageIn: e, block: b) }
     }
 
     override func isAccessibilityElement() -> Bool { true }

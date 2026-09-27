@@ -551,6 +551,8 @@ public final class BlockLayout {
     private let tableSpacing: CGFloat
     /// Header row and line-number gutter of a code block.
     public let code: CodeChrome?
+    /// The picture of an image island (P0-07).
+    public let image: ImageChrome?
 
     /// Height of the block's own box (padding included, spacing excluded).
     /// For a table it includes the estimates of rows not measured yet.
@@ -573,9 +575,10 @@ public final class BlockLayout {
 
     init(id: NodeID, layoutKey: UInt64, role: BlockRole, style: TextStyle, context: BlockContext, isRevealed: Bool,
          width: CGFloat, indent: CGFloat, cells: [CellLayout], cellFrames: [CGRect], table: TableLayout?, height: CGFloat,
-         tableSpacing: CGFloat = 0, code: CodeChrome? = nil) {
+         tableSpacing: CGFloat = 0, code: CodeChrome? = nil, image: ImageChrome? = nil) {
         self.id = id
         self.code = code
+        self.image = image
         self.layoutKey = layoutKey
         self.role = role
         self.style = style
@@ -623,7 +626,8 @@ extension LayoutEngine {
     /// and tables may use `wideWidth` (editor width minus margins) instead.
     public static func layout(_ block: DisplayBlock, typesetter: Typesetter, measure: CGFloat, wideWidth: CGFloat,
                               previous: BlockLayout? = nil, growOnly: Bool = false,
-                              codeOptions: CodeBlockOptions = CodeBlockOptions()) -> BlockLayout {
+                              codeOptions: CodeBlockOptions = CodeBlockOptions(),
+                              images: ImageStore? = nil, imageBase: ImageBase = ImageBase()) -> BlockLayout {
         let scale = typesetter.scale
         let indent = indent(for: block.context, scale: scale)
         let isWide: Bool = {
@@ -642,6 +646,11 @@ extension LayoutEngine {
         if case .code(let info, let isFenced) = block.role {
             return layoutCode(block, info: info, isFenced: isFenced, typesetter: typesetter, width: width, indent: indent,
                               style: style, options: codeOptions)
+        }
+
+        if let image = block.image {
+            return layoutImage(block, image: image, typesetter: typesetter, measure: measure, width: width, indent: indent,
+                               style: style, status: images?.status(of: image, base: imageBase) ?? .pending, base: imageBase)
         }
 
         let typesetCell = typesetter.typeset(block.cells[0], in: block, cellIndex: 0)
@@ -683,6 +692,11 @@ extension LayoutEngine {
                 rows[i / table.columns] = max(rows[i / table.columns], lines)
             }
             return rows.reduce(0) { $0 + $1 * style.lineHeight + 2 * style.paddingY } + scale.paragraphSpacing
+        }
+        if let image = block.image {
+            let column = max(80, measure - indent(for: block.context, scale: scale)) - 2 * style.paddingX
+            let size = imageSize(for: image, pixels: nil, column: column, zoom: scale.zoom)
+            return (image.isFolded ? max(size.height, style.lineHeight) : size.height + style.lineHeight + scale.l(6)) + 2 * style.paddingY
         }
         var lines: CGFloat = 0
         for cell in block.cells {

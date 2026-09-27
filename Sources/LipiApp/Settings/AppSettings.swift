@@ -24,6 +24,7 @@ public struct AppSettings {
         public static let countMath = "counts.includeMath"
         public static let imageNaming = "ImageNaming"
         public static let convertHEIC = "ConvertHEICToJPEG"
+        public static let imageMaxWidth = "ImageMaxWidth"
         public static let exportImages = "export.html.images"
         public static let exportTheme = "export.html.theme"
         public static let pdfImages = "export.pdf.images"
@@ -129,6 +130,16 @@ public struct AppSettings {
     public var convertHEIC: Bool {
         get { bool(Key.convertHEIC, true) }
         nonmutating set { store(newValue, Key.convertHEIC) }
+    }
+
+    /// Widths pasted and dropped images can be scaled down to; 0 is off.
+    public static let imageMaxWidths = [0, 800, 1200, 1600, 2000, 2560]
+
+    /// Scale pasted and dropped images down to this many pixels wide; 0
+    /// (the default) keeps them as they are.
+    public var imageMaxWidth: Int {
+        get { max(0, defaults.integer(forKey: Key.imageMaxWidth)) }
+        nonmutating set { store(max(0, newValue), Key.imageMaxWidth) }
     }
 
     /// What HTML export does with local images.

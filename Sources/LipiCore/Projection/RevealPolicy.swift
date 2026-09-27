@@ -139,7 +139,10 @@ public struct RevealPolicy: Sendable {
                 }
             case .paragraph:
                 if block.isTableOfContents, within(r) { set.blocks.insert(block.id) }
-            case .list, .table, .tableRow, .tableCell, .htmlBlock, .linkReferenceDefinition:
+            case .htmlBlock:
+                // An `<img>` block shows its source while the caret is in it.
+                if within(r), isImageTag(r) { set.blocks.insert(block.id) }
+            case .list, .table, .tableRow, .tableCell, .linkReferenceDefinition:
                 break
             }
             guard within(r) || block.kind == .paragraph else { return }
@@ -162,11 +165,13 @@ public struct RevealPolicy: Sendable {
                 let lineStart = rope.lineRange(rope.line(at: base + r.lowerBound)).lowerBound - base
                 if caret >= max(lineStart, lineContext.lowerBound), caret <= r.upperBound { set.inlines.insert(inline.id) }
                 return
-            case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough, .image,
+            case .code, .html, .math, .footnoteReference, .emphasis, .strong, .strikethrough,
                  .subscript, .superscript, .highlight, .emoji, .attributes:
                 if within(r) { set.inlines.insert(inline.id) }
-            case .link(_, _, let isAutolink):
-                guard !isAutolink, within(r) else { break }
+            case .link, .image:
+                // An image's source reveals in the same stages as a link's.
+                if case .link(_, _, true) = inline.kind { break }
+                guard within(r) else { break }
                 set.inlines.insert(inline.id)
                 switch preset.linkDestination {
                 case .fullOnEntry:
@@ -181,6 +186,12 @@ public struct RevealPolicy: Sendable {
             }
             guard within(r) else { return }
             for child in inline.children { visit(child, lineContext: lineContext) }
+        }
+
+        /// The block starts with `<img` (any case).
+        func isImageTag(_ r: Range<Int>) -> Bool {
+            guard r.count >= 5 else { return false }
+            return rope.string(in: (base + r.lowerBound)..<(base + r.lowerBound + 4)).lowercased() == "<img"
         }
 
         /// Position after the `]` that closes a link label.

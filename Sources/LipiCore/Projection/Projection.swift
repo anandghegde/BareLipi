@@ -599,7 +599,7 @@ struct EntryProjector {
         last.cells.append(cell)
         last = DisplayBlock(id: last.id, sourceRange: last.sourceRange.lowerBound..<end, role: last.role,
                             context: last.context, isRevealed: last.isRevealed, cells: last.cells, table: last.table,
-                            isUnclosedFence: last.isUnclosedFence)
+                            isUnclosedFence: last.isUnclosedFence, image: last.image)
         blocks.append(last)
         cursor = end
     }
@@ -721,6 +721,7 @@ struct EntryProjector {
         var builder = CellBuilder(bytes: bytes, start: cursor)
         var role: BlockRole = .paragraph
         var isUnclosedFence = false
+        var image: DisplayImage? = nil
         let end = max(r.upperBound, cursor)
 
         switch block.kind {
@@ -735,6 +736,14 @@ struct EntryProjector {
                     builder.replace(r, withBytes: Array("Table of Contents".utf8), style: .syntax)
                 } else {
                     builder.replace(r, withBytes: Array(lines.joined(separator: "\n").utf8), style: .link)
+                }
+            } else if let (inline, found) = imageInline(of: block) {
+                // An image alone in its paragraph is an island (P0-07).
+                image = found
+                if found.isFolded {
+                    builder.replace(inline.range, with: .chip, style: .image)
+                } else {
+                    emitInlines(block.inlines, &builder, style: [])
                 }
             } else {
                 emitInlines(block.inlines, &builder, style: [])
@@ -781,7 +790,22 @@ struct EntryProjector {
         case .htmlBlock:
             role = .html
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
-            builder.copy(r, .html)
+            if !showAll, let found = DisplayImage(htmlTag: string(r), isFolded: !revealed) {
+                // One `<img>` tag: an image island (P0-07).
+                image = found
+                if found.isFolded {
+                    role = .paragraph
+                    var lo = r.lowerBound, hi = r.upperBound
+                    while lo < hi, HTMLImageTag.isSpace(bytes[lo]) { lo += 1 }
+                    while hi > lo, HTMLImageTag.isSpace(bytes[hi - 1]) { hi -= 1 }
+                    builder.hide(r.lowerBound..<lo, .after)
+                    builder.replace(lo..<hi, with: .chip, style: .image)
+                } else {
+                    builder.copy(r, .html)
+                }
+            } else {
+                builder.copy(r, .html)
+            }
         case .thematicBreak:
             role = .thematicBreak
             emitPrefix(&builder, upTo: r.lowerBound, revealed: revealed)
@@ -801,8 +825,43 @@ struct EntryProjector {
         }
         let cell = builder.finish(end: end, resolve: .before)
         blocks.append(DisplayBlock(id: block.id, sourceRange: cursor..<end, role: role, context: context,
-                                   isRevealed: revealed, cells: [cell], isUnclosedFence: isUnclosedFence))
+                                   isRevealed: revealed, cells: [cell], isUnclosedFence: isUnclosedFence, image: image))
         cursor = end
+    }
+
+    private func string(_ r: Range<Int>) -> String {
+        String(decoding: UnsafeBufferPointer(rebasing: bytes[r]), as: UTF8.self)
+    }
+
+    /// The image of a paragraph that is exactly one Markdown image or one
+    /// `<img>` tag; never in source mode. Folded unless the caret is in it.
+    private func imageInline(of block: Block) -> (Inline, DisplayImage)? {
+        guard !showAll, block.inlines.count == 1, let inline = block.inlines.first else { return nil }
+        let folded = !reveal.inlines.contains(inline.id)
+        switch inline.kind {
+        case .image(let destination, let title):
+            return (inline, DisplayImage(source: destination, alt: Self.plainText(inline.children), title: title, isFolded: folded))
+        case .html(let html):
+            guard html.utf8.count >= 5, html.utf8.first == 0x3C,
+                  let image = DisplayImage(htmlTag: html, isFolded: folded) else { return nil }
+            return (inline, image)
+        default:
+            return nil
+        }
+    }
+
+    /// The text of an image's label (its alt text).
+    static func plainText(_ inlines: [Inline]) -> String {
+        var out = ""
+        for inline in inlines {
+            switch inline.kind {
+            case .text(let s), .code(let s), .emoji(let s): out += s
+            case .softBreak, .lineBreak: out += " "
+            case .math(let s, _): out += s
+            default: out += plainText(inline.children)
+            }
+        }
+        return out
     }
 
     private func emitIndentedCode(_ r: Range<Int>, _ builder: inout CellBuilder) {

@@ -39,6 +39,9 @@ public struct Renderer {
                     }
                     continue
                 }
+                if let chrome = block.image {
+                    drawImage(chrome, box: box, layout: layout, in: ctx, dirty: dirty)
+                }
                 if let chrome = block.code {
                     drawCode(block, chrome: chrome, box: box, layout: layout, in: ctx, dirty: dirty)
                     continue
@@ -85,6 +88,9 @@ public struct Renderer {
 
     func drawBackground(_ block: BlockLayout, box: CGRect, layout: DocumentLayout, in ctx: CGContext) {
         if block.hasBackground {
+            var box = box
+            // A revealed `<img>` block: the background holds only the source.
+            if let image = block.image { box.size.height = image.sourceHeight }
             let color: ThemeColor = { if case .frontMatter = block.role { return colors.bgElevated } else { return colors.codeBg } }()
             ctx.setFillColor(color.cgColor)
             ctx.addPath(CGPath(roundedRect: box, cornerWidth: 6, cornerHeight: 6, transform: nil))
@@ -100,6 +106,41 @@ public struct Renderer {
             for d in 0..<block.context.quoteDepth {
                 let x = box.minX - block.indent + CGFloat(d) * step + 2
                 ctx.fill(CGRect(x: x, y: box.minY, width: 3, height: box.height))
+            }
+        }
+    }
+
+    /// The picture of an image island: the bitmap when decoded (queued
+    /// otherwise, with a placeholder meanwhile), or the alt text box.
+    func drawImage(_ chrome: ImageChrome, box: CGRect, layout: DocumentLayout, in ctx: CGContext, dirty: CGRect) {
+        let rect = chrome.frame.offsetBy(dx: box.minX, dy: box.minY)
+        guard rect.intersects(dirty) else { return }
+        let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        switch chrome.content {
+        case .picture:
+            if let bitmap = layout.images?.bitmap(of: chrome.image, base: chrome.base) {
+                ctx.saveGState()
+                ctx.interpolationQuality = .high
+                // The context is y-down; images draw y-up.
+                ctx.translateBy(x: rect.minX, y: rect.maxY)
+                ctx.scaleBy(x: 1, y: -1)
+                ctx.draw(bitmap, in: CGRect(origin: .zero, size: rect.size))
+                ctx.restoreGState()
+                return
+            }
+            fallthrough
+        case .placeholder:
+            ctx.setFillColor(colors.codeBg.cgColor)
+            ctx.addPath(path)
+            ctx.fillPath()
+        case .alt:
+            ctx.setStrokeColor(colors.border.cgColor)
+            ctx.setLineWidth(1)
+            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 4, cornerHeight: 4, transform: nil))
+            ctx.strokePath()
+            if let label = chrome.label {
+                ctx.textPosition = CGPoint(x: box.minX + chrome.labelOrigin.x, y: box.minY + chrome.labelOrigin.y)
+                CTLineDraw(label, ctx)
             }
         }
     }

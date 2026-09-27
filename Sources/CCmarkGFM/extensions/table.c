@@ -296,6 +296,18 @@ static void try_inserting_table_header_paragraph(cmark_parser *parser,
   parser->mem->free(paragraph_content);
   // lipi: the lines preceding the header keep their provenance
   lipi_node_copy_lines_before(paragraph, parent_container, paragraph_offset);
+  // lipi: and their source position (upstream leaves it 0:0, so the
+  // paragraph appeared to start at the top of the document)
+  paragraph->start_line = parent_container->start_line;
+  paragraph->start_column = parent_container->start_column;
+  if (paragraph->lipi_line_count > 0) {
+    const lipi_line_info *last = &paragraph->lipi_lines[paragraph->lipi_line_count - 1];
+    paragraph->end_line = last->line;
+    paragraph->end_column = last->prefix + last->len - last->pad - 1;
+  } else {
+    paragraph->end_line = parent_container->start_line;
+    paragraph->end_column = parent_container->start_column;
+  }
 
   if (!cmark_node_insert_before(parent_container, paragraph)) {
     parser->mem->free(paragraph);

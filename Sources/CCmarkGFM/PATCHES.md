@@ -126,7 +126,8 @@ the last merged node and propagates `LIPI_FLAG_APPROX`.
   paragraph's line map; body cells get the byte columns of the cell text on
   the current line; the lines preceding the header keep their provenance
   when the table extension splits a paragraph
-  (`lipi_node_copy_lines_before`).
+  (`lipi_node_copy_lines_before`), and that paragraph gets the split
+  paragraph's start position (upstream leaves it at 0:0).
 
 ## 2. Thread safety: per-parser special-character tables
 

@@ -43,7 +43,8 @@ enum CMarkBridge {
         guard let root = cmark_parser_finish(parser) else { return [] }
         defer { cmark_node_free(root) }
 
-        var converter = Converter(bytes: bytes, lineStarts: lineStarts(of: bytes), ids: ids)
+        var converter = Converter(bytes: bytes, lineStarts: lineStarts(of: bytes), ids: ids,
+                                  hasNUL: bytes.count > 0 && memchr(bytes.baseAddress!, 0, bytes.count) != nil)
         converter.emoji = options.extensions.contains(.emojiShortcodes)
         converter.headingAttributes = options.extensions.contains(.headingAttributes)
         let result = converter.regionBlocks(from: root)
@@ -133,6 +134,9 @@ private struct Converter {
     let bytes: UnsafeBufferPointer<UInt8>
     let lineStarts: [Int]
     var ids: NodeIDGenerator
+    /// cmark reads a NUL byte as U+FFFD (three bytes), so on a line with
+    /// one, its columns after the NUL run two ahead of the source bytes.
+    var hasNUL = false
     var emoji = false
     var headingAttributes = false
 
@@ -164,8 +168,16 @@ private struct Converter {
 
     /// Offset of a 0-based byte `column` on `line`, clamped into the line.
     func offset(line: Int32, column: Int) -> Int {
-        let s = lineStart(line)
-        return min(max(s, s + column), lineEnd(line))
+        let s = lineStart(line), e = lineEnd(line)
+        guard hasNUL, column > 0, e > s, memchr(bytes.baseAddress! + s, 0, e - s) != nil else {
+            return min(max(s, s + column), e)
+        }
+        var p = s, c = 0
+        while p < e, c < column {
+            c += bytes[p] == 0 ? 3 : 1
+            p += 1
+        }
+        return p
     }
 
     /// Index into `lineStarts` of the line containing `offset`.
@@ -552,8 +564,8 @@ private struct Converter {
         while let cell = child {
             defer { child = cmark_node_next(cell) }
             guard lipi_node_get_ext_type(cell) == LIPI_EXT_TABLE_CELL else { continue }
-            let a = min(max(lineStart, lineStart + Int(lipi_node_get_start(cell))), contentEnd)
-            let b = min(max(a, lineStart + Int(lipi_node_get_end(cell))), contentEnd)
+            let a = min(offset(line: line, column: Int(lipi_node_get_start(cell))), contentEnd)
+            let b = min(max(a, offset(line: line, column: Int(lipi_node_get_end(cell)))), contentEnd)
             if firstRawStart == nil { firstRawStart = a }
             var s = a, e = b
             while s < e && isSpaceOrTab(bytes[s]) { s += 1 }
@@ -564,13 +576,14 @@ private struct Converter {
                 e = s
             }
             cursor = e
-            // Cell text is the trimmed source with `\|` unescaped; map content
-            // offsets back through that one transformation.
+            // Cell text is the trimmed source with `\|` unescaped (and a NUL
+            // read as U+FFFD); map content offsets back through that.
             var map: [Int] = []
             map.reserveCapacity(e - s + 1)
             var p = s
             while p < e {
                 map.append(p)
+                if bytes[p] == 0 { map.append(p); map.append(p) }
                 if bytes[p] == 0x5C && p + 1 < e && bytes[p + 1] == 0x7C { p += 2 } else { p += 1 }
             }
             map.append(e)

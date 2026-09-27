@@ -239,6 +239,61 @@ struct ParserTests {
         #expect(failures.isEmpty, Comment(rawValue: report))
     }
 
+    /// A table whose header row is the last line of a paragraph splits the
+    /// paragraph; the paragraph cmark-gfm inserts for the lines before it
+    /// had no source position, so its range started at 0 and the block
+    /// before it got an empty span (an out-of-bounds read when projected).
+    /// Found by the byte-preservation corpus run (delete the blank line
+    /// between a paragraph and a table).
+    @Test("a paragraph split off by a table header keeps its position", arguments: [
+        "Before\n\nMixed x\n| a | b |\n| --- | --- |\n| c | d |\n",
+        "Before\n\none\ntwo\n| a | b |\n| --- | --- |\n",
+        "> quote\n> para\n> | a |\n> | - |\n",
+        "- item\n  para\n  | a |\n  | - |\n",
+    ])
+    func tableSplitsParagraph(_ text: String) {
+        var parser = LipiParser(options: .editor)
+        parser.parse(text)
+        var checker = RangeChecker(text)
+        checker.check(parser)
+        #expect(checker.failures.isEmpty, Comment(rawValue: checker.failures.joined(separator: "\n")))
+        #expect(parser.index.entries.allSatisfy { $0.length >= $0.block.range.upperBound })
+    }
+
+    /// cmark reads a NUL as U+FFFD (three bytes), so every column after a
+    /// NUL on its line was two bytes ahead: inline ranges (and the rendered
+    /// find built on them) split the scalars after it. Found by the
+    /// byte-preservation run.
+    @Test(arguments: [
+        "a@b *em* ಕನ `code`\n", "@@ [x](/y) **b**\n", "- i@tem *e*\n  x@ *f*\n",
+        "> q@ *e*\n", "# h@ *e*\n", "| a@ | *b* |\n| - | - |\n| @c | *d* |\n",
+    ])
+    func columnsAfterANULByte(_ template: String) {
+        let text = template.replacingOccurrences(of: "@", with: "\u{0}")
+        var parser = LipiParser(options: .editor)
+        parser.parse(text)
+        let bytes = Array(text.utf8)
+        var spans: [(Range<Int>, UInt8)] = []
+        func walk(_ inlines: [Inline]) {
+            for i in inlines {
+                switch i.kind {
+                case .emphasis, .strong: spans.append((i.range, 0x2A))
+                case .code: spans.append((i.range, 0x60))
+                case .link: spans.append((i.range, 0x5B))
+                default: break
+                }
+                walk(i.children)
+            }
+        }
+        func blocks(_ bs: [Block]) { for b in bs { walk(b.inlines); blocks(b.children) } }
+        blocks(parser.blocks)
+        #expect(!spans.isEmpty)
+        for (r, opener) in spans {
+            #expect(bytes[r.lowerBound] == opener, "span at \(r)")
+            #expect(bytes[r.upperBound - 1] == (opener == 0x5B ? 0x29 : opener), "span at \(r)")
+        }
+    }
+
     @Test("incremental re-parse equals a full parse under random edits", arguments: Array(1...16) as [UInt64])
     func incremental(seed: UInt64) throws {
         let examples = try allExamples()

@@ -15483,8 +15483,16 @@ TOML_IMPL_NAMESPACE_START
 		{
 			return_if_error({});
 			assert_not_eof();
-			TOML_ASSERT_ASSUME(is_bare_key_character(*cp) || is_string_delimiter(*cp));
 			push_parse_scope("key"sv);
+
+			// BareLipi patch: callers dispatch here on characters that need
+			// not start a key (a line starting with a combining mark such as
+			// U+0CCD); upstream only asserts (abort in debug, undefined
+			// behaviour in release). Report it instead.
+			if (!is_bare_key_character(*cp) && !is_string_delimiter(*cp))
+				set_error_and_return_default("expected bare key starting character or string delimiter, saw '"sv,
+											 to_sv(*cp),
+											 "'"sv);
 
 			key_buffer.clear();
 			recording_whitespace = false;

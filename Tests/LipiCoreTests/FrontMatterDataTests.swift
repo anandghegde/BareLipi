@@ -72,6 +72,17 @@ struct FrontMatterDataTests {
         #expect(d.isMalformed)
     }
 
+    /// A line starting with a combining mark (typing Kannada into a TOML
+    /// key) tripped the same kind of assert in `parse_key`.
+    @Test(arguments: [
+        "\u{0CCD} x = 1\n", "[params]\n\u{0CCD}  weigh\u{093C}ts = [1, 2, 3]\n",
+        "[\u{0CCD}]\n", "a.\u{0CCD} = 1\n",
+    ])
+    func malformedTOMLKeyIsAnError(_ source: String) {
+        let d = FrontMatterData.parse(source, kind: .toml)
+        #expect(d.isMalformed)
+    }
+
     @Test func emptyIsWellFormed() {
         #expect(!FrontMatterData.parse("", kind: .yaml).isMalformed)
         #expect(!FrontMatterData.parse("# only a comment\n", kind: .yaml).isMalformed)

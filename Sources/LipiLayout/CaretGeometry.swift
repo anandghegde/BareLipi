@@ -12,7 +12,7 @@ public enum CaretGeometry {
         let clamped = max(0, min(offset, cell.length))
         let i = cell.lineIndex(containing: clamped, upstream: upstream)
         let line = cell.lines[i]
-        let x = line.x + CGFloat(CTLineGetOffsetForStringIndex(line.line, clamped, nil))
+        let x = line.x + line.offset(for: clamped)
         return CGRect(x: x, y: line.top, width: 0, height: line.height)
     }
 
@@ -21,8 +21,7 @@ public enum CaretGeometry {
     public static func offset(at point: CGPoint, in cell: CellLayout) -> Int {
         let i = cell.lineIndex(atY: point.y)
         let line = cell.lines[i]
-        var index = CTLineGetStringIndexForPosition(line.line, CGPoint(x: point.x - line.x, y: 0))
-        if index == kCFNotFound { index = line.range.lowerBound }
+        var index = line.index(atX: point.x - line.x)
         if index >= line.range.upperBound, !line.range.isEmpty {
             // Keep the caret on this line: before a hard newline, or at the
             // last character boundary before a soft wrap.

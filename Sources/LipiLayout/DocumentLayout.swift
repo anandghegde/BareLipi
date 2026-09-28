@@ -310,7 +310,9 @@ public final class DocumentLayout {
                 stats.blocksFromCache += 1
             } else {
                 var prior = cache.previousLayout(of: block.id)
-                if prior == nil, let previous, b < previous.blocks.count, previous.blocks[b].table != nil, block.table != nil {
+                // The same block of the layout before the edit: a table
+                // keeps its unchanged rows, a long paragraph its unchanged lines.
+                if prior == nil, let previous, b < previous.blocks.count, (previous.blocks[b].table != nil) == (block.table != nil) {
                     prior = previous.blocks[b]
                 }
                 layout = LayoutEngine.layout(block, typesetter: typesetter, measure: measure, wideWidth: wideWidth,

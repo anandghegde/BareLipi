@@ -78,9 +78,13 @@ public struct Renderer {
                 ctx.fill(CGRect(x: rect.minX, y: rect.maxY - 1, width: rect.width, height: 1))
             }
         }
-        for line in cell.lines {
+        // Lines have the cell's fixed height: draw only the rows the dirty
+        // rect crosses (a 1 MB paragraph has some 11,000 lines).
+        let first = cell.lineIndex(atY: dirty.minY - origin.y - cell.typeset.lineHeight)
+        for line in cell.lines[first...] {
             let lineRect = CGRect(x: origin.x, y: origin.y + line.top, width: cell.width, height: line.height)
-            guard lineRect.maxY >= dirty.minY, lineRect.minY <= dirty.maxY else { continue }
+            if lineRect.minY > dirty.maxY { break }
+            guard lineRect.maxY >= dirty.minY else { continue }
             ctx.textPosition = CGPoint(x: origin.x + line.x, y: origin.y + line.baseline)
             CTLineDraw(line.line, ctx)
         }

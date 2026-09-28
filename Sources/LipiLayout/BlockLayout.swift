@@ -10,6 +10,11 @@ public struct LineFragment {
     public let line: CTLine
     /// UTF-16 range in the cell text.
     public let range: Range<Int>
+    /// Cell offset of the line's string index 0. A line broken from a window
+    /// of a long cell, or kept from the layout before an edit, indexes a
+    /// string other than the cell text; `offset(for:)` and `index(atX:)`
+    /// translate.
+    public let base: Int
     public let top: CGFloat
     public let baseline: CGFloat
     /// Pen offset for the paragraph's flush (0 for left-aligned lines).
@@ -24,6 +29,24 @@ public struct LineFragment {
     public var isRightToLeft: Bool {
         guard let runs = CTLineGetGlyphRuns(line) as? [CTRun], let first = runs.first else { return false }
         return CTRunGetStatus(first).contains(.rightToLeft)
+    }
+
+    /// Pen offset of cell offset `offset` (relative to `x`).
+    public func offset(for offset: Int) -> CGFloat {
+        CGFloat(CTLineGetOffsetForStringIndex(line, offset - base, nil))
+    }
+
+    /// Cell offset nearest to `x` (relative to `x` of the line).
+    public func index(atX x: CGFloat) -> Int {
+        let i = CTLineGetStringIndexForPosition(line, CGPoint(x: x, y: 0))
+        return i == kCFNotFound ? range.lowerBound : i + base
+    }
+
+    /// The same line `delta` further into the cell, at a new top.
+    func moved(by delta: Int, top: CGFloat, baseline: CGFloat) -> LineFragment {
+        LineFragment(line: line, range: (range.lowerBound + delta)..<(range.upperBound + delta), base: base + delta, top: top,
+                     baseline: baseline, x: x, ascent: ascent, descent: descent, width: width,
+                     trailingWhitespace: trailingWhitespace, height: height)
     }
 }
 
@@ -42,9 +65,12 @@ public final class CellLayout {
     public let decorations: [DecorationRect]
     /// Width of the widest line (natural width when `width` is unbounded).
     public let usedWidth: CGFloat
+    /// Window the lines were broken with (`Int.max`: one typesetter).
+    let windowLength: Int
 
-    init(typeset: TypesetCell, width: CGFloat, lines: [LineFragment], decorations: [DecorationRect]) {
+    init(typeset: TypesetCell, width: CGFloat, lines: [LineFragment], decorations: [DecorationRect], windowLength: Int = .max) {
         self.typeset = typeset
+        self.windowLength = windowLength
         self.width = width
         self.lines = lines
         self.height = lines.last?.bottom ?? typeset.lineHeight
@@ -81,62 +107,117 @@ public final class CellLayout {
 // MARK: - Typesetting
 
 public enum LayoutEngine {
+    /// Cells at least this long (UTF-16 units) are broken through
+    /// typesetters over windows of their text, and re-laid out after an
+    /// edit from the lines of their previous layout. `CTTypesetterSuggestLineBreak`
+    /// takes time in proportion to the text after the line's start, so one
+    /// typesetter over a 1 MB paragraph made breaking it quadratic (83 s).
+    public static let windowThreshold = 16_384
+    /// Text a window starts with; it grows for a line that does not end well
+    /// inside it.
+    public static let windowLength = 4_096
+    /// A window is replaced once less than this is left after a line's start.
+    static let windowTail = 1_024
+    /// A break this close to the cut end of a window is not trusted: line
+    /// breaking looks a few characters ahead (UAX #14).
+    static let windowMargin = 64
+
     /// Breaks `cell` into lines at `width` with `CTTypesetter`
     /// (`CTTypesetterSuggestLineBreak`: word boundaries first, then cluster
     /// boundaries when a word is longer than the measure).
-    public static func typeset(_ cell: TypesetCell, width: CGFloat) -> CellLayout {
+    ///
+    /// With `previous`, the layout of an earlier version of the same cell at
+    /// the same width, the lines before the edit are kept and lines are
+    /// re-broken from the one before the edit only until a new line starts
+    /// where an old one did past the edit; the old lines after that point
+    /// are moved by the length change instead of being typeset again. The
+    /// result equals a fresh layout. `windowLength` overrides the window
+    /// (`Int.max`: one typesetter over the whole cell); by default cells
+    /// shorter than `windowThreshold` use one typesetter.
+    public static func typeset(_ cell: TypesetCell, width: CGFloat, previous: CellLayout? = nil, windowLength: Int? = nil) -> CellLayout {
         let attributed = cell.attributed
         let length = attributed.length
         let lineHeight = cell.lineHeight
-        var lines: [LineFragment] = []
-        lines.reserveCapacity(max(1, Int(length / 60) + 1))
         let flush = cell.flushFactor
+        var lines: [LineFragment] = []
+        // Windows would resolve the paragraph direction per window, so cells
+        // with right-to-left text keep one typesetter.
+        let window = windowLength ?? (length >= windowThreshold && !cell.containsRightToLeft ? Self.windowLength : .max)
 
-        func place(_ line: CTLine, range: Range<Int>, top: CGFloat) -> LineFragment {
+        func place(_ line: CTLine, range: Range<Int>, base: Int) -> LineFragment {
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             let lineWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
             let trailing = CGFloat(CTLineGetTrailingWhitespaceWidth(line))
             let x = flush > 0 && width.isFinite ? CGFloat(CTLineGetPenOffsetForFlush(line, flush, Double(width))) : 0
-            let baseline = (top + (lineHeight - (ascent + descent)) / 2 + ascent).rounded()
-            return LineFragment(line: line, range: range, top: top, baseline: baseline, x: x, ascent: ascent, descent: descent,
-                                width: lineWidth, trailingWhitespace: trailing, height: lineHeight)
+            // Tops are multiples of the line height, so a line moved by an
+            // edit lands exactly where a fresh layout puts it.
+            let top = CGFloat(lines.count) * lineHeight
+            return LineFragment(line: line, range: range, base: base, top: top, baseline: baseline(top: top, ascent: ascent, descent: descent, lineHeight: lineHeight),
+                                x: x, ascent: ascent, descent: descent, width: lineWidth, trailingWhitespace: trailing, height: lineHeight)
         }
 
         if length == 0 {
             let line = CTLineCreateWithAttributedString(attributed)
-            lines.append(place(line, range: 0..<0, top: 0))
+            lines.append(place(line, range: 0..<0, base: 0))
         } else {
-            let typesetter = CTTypesetterCreateWithAttributedString(attributed)
+            var breaker = LineBreaker(attributed: attributed, width: width, windowLength: window)
             var start = 0
-            var top: CGFloat = 0
+            // Lines broken another way (one typesetter, other windows) may
+            // be shaped differently: those are not kept.
+            let reuse = previous.flatMap { $0.windowLength == window ? Reuse(from: $0, to: cell, width: width) : nil }
+            if let reuse, let previous {
+                lines.append(contentsOf: previous.lines[0..<reuse.keptLines])
+                start = lines.last?.range.upperBound ?? 0
+            }
             while start < length {
-                var count = width.isFinite ? CTTypesetterSuggestLineBreak(typesetter, start, Double(width)) : length - start
-                if count <= 0 { count = max(1, CTTypesetterSuggestClusterBreak(typesetter, start, Double(width))) }
-                let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))
-                lines.append(place(line, range: start..<(start + count), top: top))
+                if let reuse, let previous, start >= reuse.newEditEnd, let j = reuse.oldLine(startingAt: start - reuse.delta, in: previous) {
+                    // Line breaks are back in step: the rest is the old
+                    // lines, moved.
+                    for old in previous.lines[j...] where !old.range.isEmpty {
+                        let top = CGFloat(lines.count) * lineHeight
+                        lines.append(old.moved(by: reuse.delta, top: top,
+                                               baseline: baseline(top: top, ascent: old.ascent, descent: old.descent, lineHeight: lineHeight)))
+                    }
+                    start = length
+                    break
+                }
+                let (line, count, base) = breaker.line(from: start)
+                lines.append(place(line, range: start..<(start + count), base: base))
                 start += count
-                top += lineHeight
             }
             // A trailing newline opens an empty last line for the caret.
-            if let last = attributed.string.utf16.last, last == 0x0A {
+            if CFStringGetCharacterAtIndex(CFAttributedStringGetString(attributed), length - 1) == 0x0A {
                 let empty = CTLineCreateWithAttributedString(attributed.attributedSubstring(from: NSRange(location: length - 1, length: 0)))
-                lines.append(place(empty, range: length..<length, top: top))
+                lines.append(place(empty, range: length..<length, base: length))
             }
         }
         let decorations = decorationRects(for: cell, lines: lines)
-        return CellLayout(typeset: cell, width: width, lines: lines, decorations: decorations)
+        return CellLayout(typeset: cell, width: width, lines: lines, decorations: decorations, windowLength: window)
+    }
+
+    static func baseline(top: CGFloat, ascent: CGFloat, descent: CGFloat, lineHeight: CGFloat) -> CGFloat {
+        (top + (lineHeight - (ascent + descent)) / 2 + ascent).rounded()
     }
 
     static func decorationRects(for cell: TypesetCell, lines: [LineFragment]) -> [DecorationRect] {
-        guard !cell.decorations.isEmpty else { return [] }
+        guard !cell.decorations.isEmpty, !lines.isEmpty else { return [] }
         var result: [DecorationRect] = []
         for decoration in cell.decorations {
-            for (i, line) in lines.enumerated() where line.range.overlaps(decoration.range) || (line.range.isEmpty && false) {
+            // First line ending after the decoration's start (lines tile the text).
+            var lo = 0, hi = lines.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if lines[mid].range.upperBound <= decoration.range.lowerBound { lo = mid + 1 } else { hi = mid }
+            }
+            var i = lo
+            while i < lines.count, lines[i].range.lowerBound < decoration.range.upperBound {
+                defer { i += 1 }
+                let line = lines[i]
                 let lo = max(line.range.lowerBound, decoration.range.lowerBound)
                 let hi = min(line.range.upperBound, decoration.range.upperBound)
                 guard lo < hi else { continue }
-                let x0 = CGFloat(CTLineGetOffsetForStringIndex(line.line, lo, nil))
-                let x1 = CGFloat(CTLineGetOffsetForStringIndex(line.line, hi, nil))
+                let x0 = line.offset(for: lo)
+                let x1 = line.offset(for: hi)
                 let left = line.x + min(x0, x1)
                 let w = abs(x1 - x0)
                 let rect: CGRect
@@ -156,6 +237,172 @@ public enum LayoutEngine {
             }
         }
         return result
+    }
+}
+
+/// Suggests line breaks from any line start of one cell, through one
+/// typesetter over the whole text or over a window of it that moves along
+/// with the lines. A window starts at a line start, so each line is shaped
+/// and broken as a typesetter over the whole text would, as long as it ends
+/// well before the window is cut.
+struct LineBreaker {
+    let attributed: NSAttributedString
+    let string: CFString
+    let length: Int
+    let width: CGFloat
+    let windowLength: Int
+    private var typesetter: CTTypesetter?
+    private var windowStart = 0
+    private var windowEnd = 0
+
+    init(attributed: NSAttributedString, width: CGFloat, windowLength: Int) {
+        self.attributed = attributed
+        string = CFAttributedStringGetString(attributed)
+        length = attributed.length
+        self.width = width
+        // An unbounded width sets the whole text on one line.
+        self.windowLength = width.isFinite ? max(windowLength, 2 * LayoutEngine.windowTail) : .max
+    }
+
+    /// The line starting at `start`, its length, and the cell offset of the
+    /// line's string index 0.
+    mutating func line(from start: Int) -> (CTLine, Int, Int) {
+        if typesetter == nil || start < windowStart || start >= windowEnd
+            || (windowEnd < length && windowEnd - start < LayoutEngine.windowTail) {
+            open(at: start, span: windowLength)
+        }
+        while true {
+            let local = start - windowStart
+            var count = width.isFinite ? CTTypesetterSuggestLineBreak(typesetter!, local, Double(width)) : windowEnd - start
+            if count <= 0 { count = max(1, CTTypesetterSuggestClusterBreak(typesetter!, local, Double(width))) }
+            if windowEnd < length, start + count > windowEnd - LayoutEngine.windowMargin {
+                // The line may run past the window: widen it and try again.
+                open(at: start, span: 2 * (windowEnd - start))
+                continue
+            }
+            return (CTTypesetterCreateLine(typesetter!, CFRange(location: local, length: count)), count, windowStart)
+        }
+    }
+
+    private mutating func open(at start: Int, span: Int) {
+        var end = span >= length - start ? length : start + span
+        // Never cut a surrogate pair.
+        if end < length, (0xDC00...0xDFFF).contains(CFStringGetCharacterAtIndex(string, end)) { end += 1 }
+        windowStart = start
+        windowEnd = end
+        typesetter = start == 0 && end == length
+            ? CTTypesetterCreateWithAttributedString(attributed)
+            : CTTypesetterCreateWithAttributedString(attributed.attributedSubstring(from: NSRange(location: start, length: end - start)))
+    }
+}
+
+/// What an edit left of a cell's previous layout: the text before the first
+/// changed character and after the last one (with their attributes), and
+/// how many of the old lines are certainly unchanged.
+struct Reuse {
+    /// Old lines kept as they are: those ending before the line holding the
+    /// first change, less one, since a shorter first word can pull back onto
+    /// the line before.
+    let keptLines: Int
+    /// New length minus old length.
+    let delta: Int
+    /// End of the changed text in the new cell (the unchanged suffix starts here).
+    let newEditEnd: Int
+
+    init?(from old: CellLayout, to new: TypesetCell, width: CGFloat) {
+        let oldCell = old.typeset
+        guard old.width == width, oldCell.lineHeight == new.lineHeight, oldCell.flushFactor == new.flushFactor,
+              oldCell.length > 0, new.length > 0, !old.lines.isEmpty else { return nil }
+        let a: CFString = CFAttributedStringGetString(oldCell.attributed)
+        let b: CFString = CFAttributedStringGetString(new.attributed)
+        let oldLength = oldCell.length, newLength = new.length
+        var prefix = Reuse.commonPrefix(a, b, limit: min(oldLength, newLength))
+        var suffix = Reuse.commonSuffix(a, b, oldLength: oldLength, newLength: newLength, limit: min(oldLength, newLength) - prefix)
+        prefix = Reuse.sameAttributes(oldCell.attributed, new.attributed, from: 0, to: prefix, shift: 0)
+        let delta = newLength - oldLength
+        let suffixStart = oldLength - suffix
+        suffix = oldLength - Reuse.sameAttributesBackward(oldCell.attributed, new.attributed, from: suffixStart, to: oldLength, shift: delta)
+        let first = old.lineIndex(containing: prefix)
+        keptLines = max(0, first - 1)
+        self.delta = delta
+        newEditEnd = newLength - suffix
+    }
+
+    /// Index of the old line that starts at old offset `offset` in the
+    /// unchanged suffix, if one does.
+    func oldLine(startingAt offset: Int, in old: CellLayout) -> Int? {
+        let lines = old.lines
+        var lo = 0, hi = lines.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if lines[mid].range.lowerBound < offset { lo = mid + 1 } else { hi = mid }
+        }
+        guard lo < lines.count, lines[lo].range.lowerBound == offset, !lines[lo].range.isEmpty else { return nil }
+        return lo
+    }
+
+    static let chunk = 4_096
+
+    static func commonPrefix(_ a: CFString, _ b: CFString, limit: Int) -> Int {
+        var bufferA = [UniChar](repeating: 0, count: chunk), bufferB = [UniChar](repeating: 0, count: chunk)
+        var done = 0
+        while done < limit {
+            let n = min(chunk, limit - done)
+            CFStringGetCharacters(a, CFRange(location: done, length: n), &bufferA)
+            CFStringGetCharacters(b, CFRange(location: done, length: n), &bufferB)
+            if memcmp(bufferA, bufferB, n * 2) != 0 {
+                var k = 0
+                while bufferA[k] == bufferB[k] { k += 1 }
+                return done + k
+            }
+            done += n
+        }
+        return limit
+    }
+
+    static func commonSuffix(_ a: CFString, _ b: CFString, oldLength: Int, newLength: Int, limit: Int) -> Int {
+        var bufferA = [UniChar](repeating: 0, count: chunk), bufferB = [UniChar](repeating: 0, count: chunk)
+        var done = 0
+        while done < limit {
+            let n = min(chunk, limit - done)
+            CFStringGetCharacters(a, CFRange(location: oldLength - done - n, length: n), &bufferA)
+            CFStringGetCharacters(b, CFRange(location: newLength - done - n, length: n), &bufferB)
+            if memcmp(bufferA, bufferB, n * 2) != 0 {
+                var k = 0
+                while bufferA[n - 1 - k] == bufferB[n - 1 - k] { k += 1 }
+                return done + k
+            }
+            done += n
+        }
+        return limit
+    }
+
+    /// The first old offset in `from..<to` where the attributes differ from
+    /// the new cell's at the same offset plus `shift` (`to` when none do).
+    static func sameAttributes(_ old: NSAttributedString, _ new: NSAttributedString, from: Int, to: Int, shift: Int) -> Int {
+        var p = from
+        while p < to {
+            var ro = NSRange(), rn = NSRange()
+            let ao = old.attributes(at: p, effectiveRange: &ro)
+            let an = new.attributes(at: p + shift, effectiveRange: &rn)
+            guard NSDictionary(dictionary: ao).isEqual(to: an) else { return p }
+            p = min(ro.upperBound, rn.upperBound - shift)
+        }
+        return to
+    }
+
+    /// The last old offset in `from..<to` where the attributes differ from
+    /// the new cell's, plus one (`from` when none do).
+    static func sameAttributesBackward(_ old: NSAttributedString, _ new: NSAttributedString, from: Int, to: Int, shift: Int) -> Int {
+        var p = to
+        while p > from {
+            var ro = NSRange(), rn = NSRange()
+            let ao = old.attributes(at: p - 1, effectiveRange: &ro)
+            let an = new.attributes(at: p - 1 + shift, effectiveRange: &rn)
+            guard NSDictionary(dictionary: ao).isEqual(to: an) else { return p }
+            p = max(ro.location, rn.location - shift)
+        }
+        return from
     }
 }
 
@@ -654,7 +901,14 @@ extension LayoutEngine {
         }
 
         let typesetCell = typesetter.typeset(block.cells[0], in: block, cellIndex: 0)
-        let cell = typeset(typesetCell, width: width - 2 * style.paddingX)
+        // A long cell keeps the lines of its previous layout that an edit
+        // left alone (typing in a 1 MB paragraph re-breaks a few lines).
+        var prior: CellLayout?
+        if typesetCell.length >= windowThreshold, let previous, previous.table == nil, previous.code == nil, previous.image == nil,
+           previous.cellCount == 1 {
+            prior = previous.cell(0)
+        }
+        let cell = typeset(typesetCell, width: width - 2 * style.paddingX, previous: prior)
         let frame = CGRect(x: style.paddingX, y: style.paddingY, width: width - 2 * style.paddingX, height: cell.height)
         var height = cell.height + 2 * style.paddingY
         if block.isThematicBreak, block.cells[0].text.isEmpty { height = style.lineHeight }

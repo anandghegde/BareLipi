@@ -943,7 +943,7 @@ public final class EditorController {
         let end = buffer.count
         guard offset < end else { return end }
         let line = buffer.rope.lineRange(buffer.rope.line(at: offset))
-        if offset >= line.upperBound - 1, offset < end, buffer.rope.byte(at: offset) == 0x0A { return offset + 1 }
+        if offset == line.upperBound - 1, [0x0A, 0x0D].contains(buffer.rope.byte(at: offset)) { return offset + 1 }
         let bytes = Array(buffer.rope.string(in: offset..<line.upperBound).utf8)
         var i = 0
         while i < bytes.count, isSpace(bytes[i]) { i += 1 }

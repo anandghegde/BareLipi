@@ -416,7 +416,10 @@ public struct LipiParser: Sendable {
         let rowOffset = bytes.count
         rope.forEachChunk(in: line) { bytes.append(contentsOf: $0.utf8) }
         // The line must still end after the inserted bytes: no newline typed.
-        let lineContentEnd = line.upperBound - (bytes.last == 0x0A ? 1 : 0)
+        var terminator = 0
+        if bytes.last == 0x0A { terminator = bytes.count >= 2 && bytes[bytes.count - 2] == 0x0D ? 2 : 1 }
+        else if bytes.last == 0x0D { terminator = 1 }
+        let lineContentEnd = line.upperBound - terminator
         guard lineContentEnd >= start + edit.oldRange.lowerBound + edit.newCount else { return false }
         if options.extensions.contains(.footnotes) {
             var p = rowOffset

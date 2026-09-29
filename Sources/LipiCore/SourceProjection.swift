@@ -2,8 +2,8 @@
 /// written, in one display block per entry, with syntax colouring taken
 /// from the AST. The offset map is the identity except for two structural
 /// cases: a `\r` before `\n` is hidden (the pair is one line break), and a
-/// non-final entry's last line terminator is hidden because the block
-/// boundary already breaks the line.
+/// non-final entry's last line terminator (`\n`, `\r\n` or a lone `\r`) is
+/// hidden because the block boundary already breaks the line.
 struct SourceEntryProjector {
     let bytes: UnsafeBufferPointer<UInt8>
     let isLastEntry: Bool
@@ -23,6 +23,8 @@ struct SourceEntryProjector {
         if !isLastEntry, visibleEnd > 0, bytes[visibleEnd - 1] == 0x0A {
             visibleEnd -= 1
             if visibleEnd > 0, bytes[visibleEnd - 1] == 0x0D { visibleEnd -= 1 }
+        } else if !isLastEntry, visibleEnd > 0, bytes[visibleEnd - 1] == 0x0D {
+            visibleEnd -= 1  // a lone `\r` ends the line as cmark-gfm reads it
         }
         var builder = CellBuilder(bytes: bytes, start: 0)
         var p = 0

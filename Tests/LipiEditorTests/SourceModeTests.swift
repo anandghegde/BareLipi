@@ -42,6 +42,15 @@ struct SourceModeTests {
         #expect(c.string == "a *b*\r\n\r\n\r\n- c\r\n")
     }
 
+    @Test func loneCRTerminatorsAreBlockBoundariesToo() {
+        let lf = EditorController(text: "# a\n\nb\nc\n\n- d\n")
+        let cr = EditorController(text: "# a\r\rb\rc\r\r- d\r")
+        lf.toggleSourceMode()
+        cr.toggleSourceMode()
+        #expect(displayText(cr).replacingOccurrences(of: "\r", with: "\n") == displayText(lf))
+        #expect(cr.string == "# a\r\rb\rc\r\r- d\r")
+    }
+
     @Test func syntaxIsColouredFromTheAST() {
         let c = EditorController(text: "# H *e* `c`")
         c.toggleSourceMode()

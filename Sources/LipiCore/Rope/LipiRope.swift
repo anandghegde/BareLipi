@@ -23,6 +23,7 @@ public struct LipiRope: Sendable {
     public var utf16Count: Int { root.summary.utf16 }
     public var scalarCount: Int { root.summary.scalars }
     /// Number of lines, counting a trailing partial line: "a\nb" has 2, "a\n" has 2, "" has 1.
+    /// `\n`, `\r\n` and a lone `\r` each end a line, as in cmark-gfm: "a\rb\r\nc" has 3.
     public var lineCount: Int { root.summary.lines + 1 }
     public var isEmpty: Bool { count == 0 }
     public var endOffset: SourceOffset { SourceOffset(count) }
@@ -157,7 +158,9 @@ public struct LipiRope: Sendable {
     /// dimension `to`. For `.lines` as `from`, `n` is a line index and the
     /// position is the start of that line. A UTF-16 offset inside a surrogate
     /// pair rounds down to the scalar's start. A byte offset inside a scalar
-    /// is a programming error.
+    /// is a programming error. Lines end at `\n`, `\r\n` or a lone `\r`, and a
+    /// position between the `\r` and `\n` of a pair is still on the line the
+    /// pair ends.
     public func convert(_ n: Int, from: TextDimension, to: TextDimension) -> Int {
         precondition(n >= 0 && n <= from.measure(summary), "offset out of bounds")
         if from == to { return n }
@@ -166,7 +169,10 @@ public struct LipiRope: Sendable {
         var acc = TextSummary.zero
         descend: while case .internalNode(let kids) = node.body {
             for k in kids {
-                let m = from.measure(k.summary)
+                var m = from.measure(k.summary)
+                // A child starting with the `\n` of a pair whose `\r` ends the
+                // text before it counts that break a second time.
+                if from == .lines, acc.endsWithCR, k.summary.startsWithLF { m -= 1 }
                 if remaining <= m {
                     // For byte-like dimensions a position exactly at a child's end
                     // equals the next child's start, so descending is harmless.
@@ -180,23 +186,29 @@ public struct LipiRope: Sendable {
         }
         // Leaf scan over UTF-8 lead bytes: stop at the first scalar boundary
         // where the `from` measure equals `remaining`, or just before the
-        // scalar that would overshoot it.
+        // scalar that would overshoot it. `local` never carries the CR / LF
+        // flags: the scan counts a `\n` after a `\r` as no break itself.
         var local = TextSummary.zero
+        var previous: UInt8 = acc.endsWithCR ? 0x0D : 0
+        var following: UInt8? = nil
         if remaining > 0 {
             @inline(__always) func scan(_ buf: UnsafeBufferPointer<UInt8>) {
                 var i = 0
                 let n = buf.count
                 while i < n {
                     let b = buf[i]
-                    let len = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4
-                    let step = TextSummary(bytes: len, utf16: len == 4 ? 2 : 1, scalars: 1, lines: b == 0x0A ? 1 : 0)
                     let cur = from.measure(local)
-                    if cur == remaining { return }
+                    if cur == remaining { following = b; return }
+                    let len = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4
+                    let breaks = b == 0x0D || (b == 0x0A && previous != 0x0D)
+                    let step = TextSummary(bytes: len, utf16: len == 4 ? 2 : 1, scalars: 1, lines: breaks ? 1 : 0)
                     if cur + from.measure(step) > remaining {
                         precondition(from != .bytes, "byte offset splits a scalar")
+                        following = b
                         return
                     }
                     local += step
+                    previous = b
                     i += len
                 }
             }
@@ -205,7 +217,15 @@ public struct LipiRope: Sendable {
                 Array(text.utf8).withUnsafeBufferPointer(scan)
             }
         }
-        return to.measure(acc + local)
+        var result = to.measure(acc) + to.measure(local)
+        // Between the `\r` and `\n` of a pair: a line index is the pair's
+        // line, and a line start is after the `\n`.
+        if previous == 0x0D, from == .lines || to == .lines {
+            let position = acc.bytes + local.bytes
+            let nextIsLF = following.map { $0 == 0x0A } ?? (position < count && byte(at: position) == 0x0A)
+            if nextIsLF { result += from == .lines ? 1 : -1 }
+        }
+        return result
     }
 
     public func utf16Offset(fromByte b: Int) -> Int { convert(b, from: .bytes, to: .utf16) }
@@ -216,13 +236,13 @@ public struct LipiRope: Sendable {
     /// Zero-based line index containing byte `offset`.
     public func line(at offset: Int) -> Int { convert(offset, from: .bytes, to: .lines) }
 
-    /// Byte offset at which line `line` starts; `count` for the line after the last newline.
+    /// Byte offset at which line `line` starts; `count` for the line after the last line break.
     public func lineStart(_ line: Int) -> Int {
         precondition(line >= 0 && line < lineCount, "line out of range")
         return convert(line, from: .lines, to: .bytes)
     }
 
-    /// Byte range of `line`, including its trailing "\n" if it has one.
+    /// Byte range of `line`, including its terminator (`\n`, `\r\n` or `\r`) if it has one.
     public func lineRange(_ line: Int) -> Range<Int> {
         let start = lineStart(line)
         let end = line + 1 < lineCount ? lineStart(line + 1) : count

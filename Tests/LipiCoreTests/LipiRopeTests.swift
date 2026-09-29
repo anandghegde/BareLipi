@@ -23,10 +23,16 @@ let pieces: [String] = [
     "مرحبا ", "e\u{301}", "\u{0915}\u{094D}\u{0937}", "👨‍👩‍👧‍👦", "🇮🇳", "𝔘𝔫𝔦", "🙂\n",
 ]
 
-func randomText(_ rng: inout SplitMix64, maxPieces: Int) -> String {
+/// Line-break-heavy alphabet: lone `\r` (classic Mac), `\r\n` and `\n` in
+/// every order, so pairs get split, joined and straddle leaves.
+let lineBreakPieces: [String] = [
+    "\r", "\n", "\r\n", "ab", "\rx", "y\r", "\n\r", "ಕ\r", "🙂", String(repeating: "w", count: 90),
+]
+
+func randomText(_ rng: inout SplitMix64, maxPieces: Int, from alphabet: [String] = pieces) -> String {
     let n = Int(rng.next() % UInt64(maxPieces + 1))
     var s = ""
-    for _ in 0..<n { s += pieces[Int(rng.next() % UInt64(pieces.count))] }
+    for _ in 0..<n { s += alphabet[Int(rng.next() % UInt64(alphabet.count))] }
     return s
 }
 
@@ -48,15 +54,24 @@ extension String {
     }
     func utf16Offset(ofByte b: Int) -> Int { utf16.distance(from: utf16.startIndex, to: byteIndex(b)) }
     func scalarOffset(ofByte b: Int) -> Int { unicodeScalars.distance(from: unicodeScalars.startIndex, to: byteIndex(b)) }
-    func newlines(before b: Int) -> Int { self[..<byteIndex(b)].utf8.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) } }
+    /// Byte offsets just after each line break (`\n`, `\r\n`, lone `\r`), as cmark-gfm reads them.
+    func lineBreakEnds() -> [Int] {
+        let u = Array(utf8)
+        var ends: [Int] = []
+        var i = 0
+        while i < u.count {
+            if u[i] == 0x0D, i + 1 < u.count, u[i + 1] == 0x0A { i += 2; ends.append(i); continue }
+            if u[i] == 0x0A || u[i] == 0x0D { ends.append(i + 1) }
+            i += 1
+        }
+        return ends
+    }
+    /// Line breaks wholly before byte `b` (a `\r\n` counts once `b` is past its `\n`).
+    func newlines(before b: Int) -> Int { lineBreakEnds().filter { $0 <= b }.count }
     func lineStartByte(_ line: Int) -> Int {
         if line == 0 { return 0 }
-        var seen = 0, i = 0
-        for byte in utf8 {
-            i += 1
-            if byte == 0x0A { seen += 1; if seen == line { return i } }
-        }
-        return utf8.count
+        let ends = lineBreakEnds()
+        return line <= ends.count ? ends[line - 1] : utf8.count
     }
 }
 
@@ -68,8 +83,17 @@ struct LipiRopePropertyTests {
 
     @Test("random edits match a String model", arguments: seeds)
     func randomEditsMatchModel(seed: UInt64) throws {
+        checkRandomEdits(seed: seed, alphabet: pieces)
+    }
+
+    @Test("random edits over lone CR, CRLF and LF match a String model", arguments: seeds)
+    func randomLineBreakEditsMatchModel(seed: UInt64) throws {
+        checkRandomEdits(seed: seed, alphabet: lineBreakPieces)
+    }
+
+    private func checkRandomEdits(seed: UInt64, alphabet: [String]) {
         var rng = SplitMix64(seed: seed)
-        var model = randomText(&rng, maxPieces: 400)
+        var model = randomText(&rng, maxPieces: 400, from: alphabet)
         var rope = LipiRope(model)
         #expect(rope.string == model)
 
@@ -78,7 +102,7 @@ struct LipiRopePropertyTests {
             switch op {
             case 0..<5: // insert, occasionally large to force leaf splits
                 let big = rng.next() % 8 == 0
-                let text = randomText(&rng, maxPieces: big ? 600 : 6)
+                let text = randomText(&rng, maxPieces: big ? 600 : 6, from: alphabet)
                 let at = randomBoundary(&rng, in: model)
                 model = model.replacingBytes(at..<at, with: text)
                 rope.insert(text, at: at)
@@ -92,7 +116,7 @@ struct LipiRopePropertyTests {
                 let a = randomBoundary(&rng, in: model)
                 let b = randomBoundary(&rng, in: model)
                 let r = min(a, b)..<max(a, b)
-                let text = randomText(&rng, maxPieces: 10)
+                let text = randomText(&rng, maxPieces: 10, from: alphabet)
                 model = model.replacingBytes(r, with: text)
                 rope.replace(r, with: text)
             }
@@ -116,6 +140,7 @@ struct LipiRopePropertyTests {
                     let line = model.newlines(before: b)
                     #expect(rope.line(at: b) == line, "line at \(b)")
                     #expect(rope.lineStart(line) == model.lineStartByte(line), "lineStart \(line)")
+                    #expect(rope.lineRange(line).contains(b) || rope.lineRange(line).upperBound == b, "lineRange \(line) holds \(b)")
                     #expect(rope.isScalarBoundary(at: b))
                     let a = randomBoundary(&rng, in: model)
                     let r = min(a, b)..<max(a, b)
@@ -164,6 +189,47 @@ struct LipiRopeBasicTests {
         #expect(r.line(at: 2) == 1)
         #expect(r.line(at: 5) == 2)
         #expect(r.lineColumn(at: 4) == (1, 2))
+    }
+
+    @Test func loneCRAndCRLFAreLineBreaks() {
+        let r: LipiRope = "a\rb\r\nc\n\rd"
+        #expect(r.lineCount == 5)
+        #expect(r.lineRange(0) == 0..<2)   // "a\r"
+        #expect(r.lineRange(1) == 2..<5)   // "b\r\n"
+        #expect(r.lineRange(2) == 5..<7)   // "c\n"
+        #expect(r.lineRange(3) == 7..<8)   // "\r"
+        #expect(r.lineRange(4) == 8..<9)   // "d"
+        #expect(r.line(at: 1) == 0)
+        #expect(r.line(at: 2) == 1)
+        #expect(r.line(at: 4) == 1)        // between the CR and LF of a pair
+        #expect(r.line(at: 5) == 2)
+        #expect(r.line(at: 8) == 4)
+        let classic: LipiRope = "one\rtwo\r"
+        #expect(classic.lineCount == 3)
+        #expect(classic.lineRange(1) == 4..<8)
+        #expect(classic.lineRange(2) == 8..<8)
+    }
+
+    @Test func crlfStraddlingLeavesIsOneBreak() {
+        // Typing `\n` after a `\r` that ends a leaf puts the `\n` at the
+        // start of the next leaf; the pair must still be one break.
+        var text = String(repeating: "a", count: 767) + "\r"
+        text += String(repeating: "b", count: 2000)
+        var r = LipiRope(text)
+        var firstChunk = 0
+        r.forEachChunk { if firstChunk == 0 { firstChunk = $0.utf8.count } }
+        #expect(firstChunk == 768)
+        #expect(r.lineCount == 2)
+        r.insert("\n", at: 768)
+        var chunks: [Substring] = []
+        r.forEachChunk { chunks.append($0) }
+        #expect(chunks[0].utf8.last == 0x0D && chunks[1].utf8.first == 0x0A)
+        #expect(r.validateStructure().isEmpty)
+        #expect(r.lineCount == 2)
+        #expect(r.lineStart(1) == 769)
+        #expect(r.line(at: 768) == 0)
+        #expect(r.line(at: 769) == 1)
+        #expect(r.lineRange(0) == 0..<769)
     }
 
     @Test func utf16SurrogateRoundsDown() {

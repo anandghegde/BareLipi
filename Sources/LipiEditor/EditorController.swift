@@ -1154,7 +1154,7 @@ public final class EditorController {
             i += 1
         }
         let total = layout.contentHeight
-        layout.layoutIfNeeded(in: visible.minY...visible.maxY)
+        _ = layout.layoutIfNeeded(in: visible.minY...visible.maxY)
         guard layout.contentHeight == total, tops.indices.allSatisfy({ layout.y(ofEntry: first + $0) == tops[$0] }) else { return nil }
         var rect = CGRect.null
         func band(_ i: Int) -> CGRect {

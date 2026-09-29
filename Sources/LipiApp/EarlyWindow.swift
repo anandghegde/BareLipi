@@ -26,8 +26,11 @@ import LipiLayout
 ///   not shown, so restored windows appear where they were. If restoration
 ///   happens anyway (the record was wrong), the first restored document
 ///   adopts the window and AppKit moves it to its saved frame;
-/// - a window nobody adopted shortly after launch (an open that failed)
-///   closes, or becomes an untitled document if it was typed in.
+/// - a window nobody adopted shortly after launch becomes an untitled
+///   document when no document opened at all (AppKit tried to restore
+///   windows it could not, say an edited untitled document after a crash,
+///   and so made no untitled document either) or when it was typed in;
+///   otherwise it closes.
 ///
 /// `present` is shared with the SwiftPM executable, which shows its one
 /// window the same way.
@@ -105,6 +108,10 @@ public final class EarlyWindow {
         tracker.attach(windowController.editor)
         // What the untitled document's window says once it has one.
         windowController.window?.title = "Untitled"
+        // Until a document owns it there is nothing to restore it from: a
+        // window saved in this state makes the next launch "restore" it,
+        // fail, and then open no untitled document either.
+        windowController.window?.isRestorable = false
         let early = EarlyWindow(windowController: windowController)
         pending = early
         tracker.phases.window = CACurrentMediaTime() - mark
@@ -134,6 +141,7 @@ public final class EarlyWindow {
     static func adopt(replacesText: Bool) -> EarlyWindow? {
         guard let early = pending, !(early.isEdited && replacesText) else { return nil }
         pending = nil
+        early.windowController.window?.isRestorable = true
         return early
     }
 
@@ -142,29 +150,55 @@ public final class EarlyWindow {
     public static func settleAfterLaunch() {
         guard pending != nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + adoptionGrace) {
-            MainActor.assumeIsolated { settleNow() }
+            MainActor.assumeIsolated {
+                _ = settleNow(hasDocuments: !NSDocumentController.shared.documents.isEmpty, makeDocument: untitledDocument)
+            }
         }
     }
 
-    /// A window nobody adopted: typed-in text becomes an untitled document,
-    /// otherwise the window closes. Returns what happened, for tests.
-    @discardableResult
-    static func settleNow(documentController: NSDocumentController = .shared) -> Settlement {
+    /// A window nobody adopted. With no documents open, or with text typed
+    /// in it, it becomes a document from `makeDocument` (whose
+    /// `makeWindowControllers` adopts it); otherwise it closes. Returns what
+    /// happened, for tests.
+    static func settleNow(hasDocuments: Bool, makeDocument: () -> NSDocument?) -> Settlement {
         guard let early = pending else { return .none }
-        if early.isEdited, let document = try? documentController.makeUntitledDocument(ofType: documentController.defaultType ?? "net.daringfireball.markdown") {
-            // makeWindowControllers adopts the pending window.
-            documentController.addDocument(document)
+        if early.isEdited || !hasDocuments, let document = makeDocument() {
             document.makeWindowControllers()
             document.showWindows()
-            return .adoptedByUntitled
+            if pending == nil { return .adopted }
         }
+        // Never close a window with typed text; if no document could take
+        // it, it stays open without one.
+        guard !early.isEdited else { return .kept }
         pending = nil
         early.windowController.close()
         return .closed
     }
 
-    enum Settlement: Equatable { case none, adoptedByUntitled, closed }
+    /// A new untitled document registered with the document controller.
+    private static func untitledDocument() -> NSDocument? {
+        let controller = NSDocumentController.shared
+        guard let type = controller.defaultType, let document = try? controller.makeUntitledDocument(ofType: type) else { return nil }
+        controller.addDocument(document)
+        return document
+    }
 
-    /// Test support: forgets the pending window.
+    enum Settlement: Equatable { case none, adopted, kept, closed }
+
+    // MARK: Test support
+
+    /// Makes `text`'s window the pending one without showing it.
+    @discardableResult
+    static func makePending(text: String) -> EarlyWindow {
+        let controller = EditorController(text: text, viewportWidth: 800)
+        let windowController = DocumentWindowController(controller: controller, theme: .taalegari,
+                                                        contentRect: NSRect(x: 0, y: 0, width: 800, height: 600))
+        windowController.window?.isRestorable = false
+        let early = EarlyWindow(windowController: windowController)
+        pending = early
+        return early
+    }
+
+    /// Forgets the pending window.
     static func reset() { pending = nil }
 }

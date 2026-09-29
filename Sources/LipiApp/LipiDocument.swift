@@ -87,6 +87,8 @@ public final class LipiDocument: NSDocument {
         let replacesText = fileURL != nil || !pendingText.isEmpty
         if let early = EarlyWindow.adopt(replacesText: replacesText) {
             let windowController = early.windowController
+            // Read before `load`, whose change would count as typing.
+            let typed = early.isEdited
             windowController.controller.documentURL = fileURL
             if replacesText {
                 windowController.controller.load(pendingText)
@@ -94,7 +96,7 @@ public final class LipiDocument: NSDocument {
             }
             pendingText = ""
             attach(windowController)
-            if early.isEdited { updateChangeCount(.changeDone) }
+            if typed { updateChangeCount(.changeDone) }
             return
         }
         let tracker = LaunchTracker.shared

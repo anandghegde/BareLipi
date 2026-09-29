@@ -13,7 +13,8 @@ if CommandLine.arguments.contains("--huge") {
 }
 if CommandLine.arguments.contains("--typing") {
     let arg = { (flag: String) in CommandLine.arguments.firstIndex(of: flag).flatMap { Int(CommandLine.arguments[$0 + 1]) } }
-    typingBench(keystrokes: arg("--keys") ?? 400, rounds: arg("--rounds") ?? 5)
+    let only = CommandLine.arguments.firstIndex(of: "--only").map { CommandLine.arguments[$0 + 1] }
+    typingBench(keystrokes: arg("--keys") ?? 400, rounds: arg("--rounds") ?? 5, only: only)
     exit(0)
 }
 

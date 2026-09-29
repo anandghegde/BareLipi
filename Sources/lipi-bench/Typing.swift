@@ -8,10 +8,11 @@ import LipiLayout
 /// Keystroke cost through `EditorController`, as the view runs it: insert,
 /// then lay out and draw the 1200 × 800 @2x screen around the caret. Plain
 /// prose, a document of footnotes and one of colour emoji, typing in the
-/// middle. `lipi-bench --typing [--keys N] [--rounds R]` runs this section
-/// alone and prints the median and p90 per fixture (medians over rounds).
+/// middle. `lipi-bench --typing [--keys N] [--rounds R] [--only NAME]` runs
+/// this section alone and prints the median and p90 per fixture (medians
+/// over rounds).
 @MainActor
-func typingBench(keystrokes: Int = 400, rounds: Int = 5) {
+func typingBench(keystrokes: Int = 400, rounds: Int = 5, only: String? = nil) {
     let size = CGSize(width: 1200, height: 800)
     let bitmap = CGContext(data: nil, width: Int(size.width * 2), height: Int(size.height * 2), bitsPerComponent: 8, bytesPerRow: 0,
                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)!
@@ -26,7 +27,7 @@ func typingBench(keystrokes: Int = 400, rounds: Int = 5) {
     ]
     print("")
     print("typing: EditorController keystroke → screen drawn, 1200 × 800 @2x, \(keystrokes) keys × \(rounds) rounds")
-    for (name, text) in fixtures {
+    for (name, text) in fixtures where only == nil || only == name {
         var medians: [Double] = [], p90s: [Double] = []
         for _ in 0..<rounds {
             let controller = EditorController(text: text, viewportWidth: size.width)

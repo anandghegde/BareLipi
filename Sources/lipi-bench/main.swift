@@ -11,6 +11,11 @@ if CommandLine.arguments.contains("--huge") {
     hugeBlockBench(keystrokes: keys ?? 50)
     exit(0)
 }
+if CommandLine.arguments.contains("--typing") {
+    let arg = { (flag: String) in CommandLine.arguments.firstIndex(of: flag).flatMap { Int(CommandLine.arguments[$0 + 1]) } }
+    typingBench(keystrokes: arg("--keys") ?? 400, rounds: arg("--rounds") ?? 5)
+    exit(0)
+}
 
 /// Phase 0 micro-benchmarks. Run with `swift run -c release lipi-bench`.
 /// Rope exit criterion (PRD §10, Phase 0): random insert into a 1 MB document

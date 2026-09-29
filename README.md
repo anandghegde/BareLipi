@@ -45,6 +45,7 @@ swift build
 swift test                                   # unit suites; perf rows print but do not gate
 swift run -c release lipi-bench              # core and layout-spike micro-benchmarks
 swift run -c release lipi-bench --huge [--keys N]   # keystrokes inside the 1 MB paragraph and the 256 KB line
+swift run -c release lipi-bench --typing [--keys N] [--rounds R]   # EditorController keystroke → screen drawn: plain, Kannada, footnotes, emoji
 swift run -c release lipi-fixtures           # writes Fixtures/perf/*.md (ignored by git)
 swift run -c release lipi-roundtrip ~/Notes  # open, save, views and random edits must keep every byte; lists files that differ
 swift run -c release lipi-roundtrip --corpus [--match S] [--steps N] [--no-render] -v   # the built-in corpus

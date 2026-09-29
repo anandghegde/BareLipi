@@ -83,6 +83,22 @@ public final class LipiDocument: NSDocument {
     // MARK: Windows
 
     public override func makeWindowControllers() {
+        // The window shown before the document controller started (launch).
+        let replacesText = fileURL != nil || !pendingText.isEmpty
+        if let early = EarlyWindow.adopt(replacesText: replacesText) {
+            let windowController = early.windowController
+            // Read before `load`, whose change would count as typing.
+            let typed = early.isEdited
+            windowController.controller.documentURL = fileURL
+            if replacesText {
+                windowController.controller.load(pendingText)
+                windowController.scroll(toY: 0)
+            }
+            pendingText = ""
+            attach(windowController)
+            if typed { updateChangeCount(.changeDone) }
+            return
+        }
         let tracker = LaunchTracker.shared
         var mark = CACurrentMediaTime()
         let controller = EditorController(text: pendingText, engine: tracker.options.engine, theme: tracker.options.theme,
@@ -93,6 +109,13 @@ public final class LipiDocument: NSDocument {
         pendingText = ""
         let windowController = DocumentWindowController(controller: controller, theme: tracker.options.theme)
         tracker.attach(windowController.editor)
+        attach(windowController)
+        tracker.phases.window = CACurrentMediaTime() - mark
+    }
+
+    /// Wires `windowController` (new, or the adopted early window) to this document.
+    private func attach(_ windowController: DocumentWindowController) {
+        let controller = windowController.controller
         let previous = controller.onChange
         controller.onChange = { [weak self] change in
             previous?(change)
@@ -109,7 +132,6 @@ public final class LipiDocument: NSDocument {
             pendingRestore = nil
             windowController.apply(state)
         }
-        tracker.phases.window = CACurrentMediaTime() - mark
     }
 
     public override func showWindows() {
@@ -121,6 +143,7 @@ public final class LipiDocument: NSDocument {
         window?.tabbingMode = .preferred
         LaunchTracker.shared.phases.shown = CACurrentMediaTime()
         if let editor = windowController?.editor { window?.makeFirstResponder(editor) }
+        if fileURL != nil { EarlyWindow.noteRestorableWindow() }
         startMonitoring()
     }
 

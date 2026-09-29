@@ -23,8 +23,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.run()
     }
 
+    /// The first frame, before `NSDocumentController` has started: the
+    /// untitled document (or the file opened at launch) adopts this window.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        EarlyWindow.showForDocuments()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         LaunchTracker.shared.didFinishLaunching()
+        EarlyWindow.settleAfterLaunch()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        let hasFileWindows = NSDocumentController.shared.documents.contains { $0.fileURL != nil && !$0.windowControllers.isEmpty }
+        // Option (Quit and Keep Windows) inverts the setting; either counts.
+        let keepsWindows = UserDefaults.standard.bool(forKey: "NSQuitAlwaysKeepsWindows") || NSEvent.modifierFlags.contains(.option)
+        EarlyWindow.noteTermination(keepsWindows: keepsWindows, hasFileWindows: hasFileWindows)
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { true }

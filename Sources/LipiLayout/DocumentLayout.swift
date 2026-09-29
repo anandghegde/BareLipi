@@ -106,6 +106,9 @@ public final class DocumentLayout {
     /// Layouts of entries replaced by the last `update`, kept for one round
     /// so tables can re-layout incrementally from them.
     private var stale: [Int: EntryLayout] = [:]
+    /// Whether the last `update` kept every unchanged entry at its index
+    /// (so only the changed entries can have moved or redrawn).
+    public private(set) var updatedInPlace = false
 
     public init(typesetter: Typesetter, cache: LayoutCache = LayoutCache(), viewportWidth: CGFloat = 800) {
         self.typesetter = typesetter
@@ -213,6 +216,8 @@ public final class DocumentLayout {
     /// layout; changed entries keep their old height as the estimate until
     /// they are laid out again.
     public func update(projection new: Projection, result: Projection.UpdateResult) {
+        updatedInPlace = updateInPlace(projection: new, result: result)
+        if updatedInPlace { return }
         let old = projection
         var oldByID: [NodeID: Int] = [:]
         oldByID.reserveCapacity(old.entries.count)
@@ -255,6 +260,51 @@ public final class DocumentLayout {
         } else {
             tree.replace(with: heights)
         }
+    }
+
+    /// `update` for the common keystroke: the same entries, only the changed
+    /// ones with new ids. Everything else keeps its index, layout and height,
+    /// so only the changed entries are touched instead of hashing every id.
+    /// Returns false, having changed nothing, when the shape differs.
+    private func updateInPlace(projection new: Projection, result: Projection.UpdateResult) -> Bool {
+        let old = projection
+        let count = new.entries.count
+        guard count == old.entries.count, count == layouts.count, count == tree.count else { return false }
+        let changed = result.changedEntries
+        guard changed.allSatisfy({ $0 < count }) else { return false }
+        var isChanged = [Bool](repeating: false, count: count)
+        for i in changed { isChanged[i] = true }
+        for i in 0..<count where !isChanged[i] && new.entries[i].id != old.entries[i].id { return false }
+        // Ids are unique, so a changed entry's id can only match an old
+        // changed entry's, and only those old ids can have vanished.
+        var oldByID: [NodeID: Int] = [:]
+        var newIDs = Set<NodeID>(minimumCapacity: changed.count)
+        for i in changed {
+            oldByID[old.entries[i].id] = i
+            newIDs.insert(new.entries[i].id)
+        }
+        stale.removeAll()
+        for j in changed where !newIDs.contains(old.entries[j].id) {
+            guard let layout = layouts[j] else { continue }
+            for block in layout.blocks { cache.invalidate(block.id) }
+        }
+        carryCodeState(from: old, to: new, changed: changed, oldByID: oldByID, sameShape: true)
+        // Read every old layout and height before any slot is overwritten:
+        // a changed entry may take over another changed slot's.
+        var heights: [(Int, Double)] = []
+        heights.reserveCapacity(changed.count)
+        for i in changed where isChanged[i] {
+            isChanged[i] = false
+            let j = oldByID[new.entries[i].id] ?? i
+            if let previous = layouts[j] { stale[i] = previous }
+            heights.append((i, tree.height(at: j)))
+        }
+        projection = new
+        for (i, height) in heights {
+            layouts[i] = nil
+            tree.update(i, height: height)
+        }
+        return true
     }
 
     func estimatedHeight(of entry: ProjectedEntry) -> CGFloat {

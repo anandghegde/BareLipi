@@ -332,9 +332,11 @@ public struct Typesetter {
         return result
     }
 
+    /// Core Text colour only. An `NSColor` beside it would make Core Text
+    /// convert it to a `CGColor` per run on every draw; TextKit 2 adds its own
+    /// (`TextKit2Layout.appKitColors`).
     func setColor(_ color: ThemeColor, on string: NSMutableAttributedString, range: NSRange) {
         string.addAttribute(.ctForeground, value: color.cgColor, range: range)
-        string.addAttribute(.foregroundColor, value: NSColor(cgColor: color.cgColor) ?? .textColor, range: range)
     }
 }
 

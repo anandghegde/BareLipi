@@ -25,7 +25,7 @@ public struct ThemeColor: Sendable, Hashable {
     }
 
     public var cgColor: CGColor {
-        CGColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+        ColorCache.color(for: self)
     }
 
     public var hexString: String {
@@ -50,6 +50,25 @@ public struct ThemeColor: Sendable, Hashable {
         let a = alpha
         return ThemeColor(red: red * a + background.red * (1 - a), green: green * a + background.green * (1 - a),
                           blue: blue * a + background.blue * (1 - a), alpha: 1)
+    }
+}
+
+/// One `CGColor` per theme colour: every keystroke re-typesets a cell and
+/// every frame fills with the same few colours, and Core Text compares run
+/// colours by pointer first.
+enum ColorCache {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var colors: [ThemeColor: CGColor] = [:]
+
+    static func color(for c: ThemeColor) -> CGColor {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hit = colors[c] { return hit }
+        // Blended and animated colours are open-ended; themes are not.
+        if colors.count >= 512 { colors.removeAll(keepingCapacity: true) }
+        let made = CGColor(srgbRed: c.red, green: c.green, blue: c.blue, alpha: c.alpha)
+        colors[c] = made
+        return made
     }
 }
 

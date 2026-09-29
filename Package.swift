@@ -106,7 +106,7 @@ let package = Package(
             dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures", "LipiApp"],
             swiftSettings: strict
         ),
-        .executableTarget(name: "lipi-bench", dependencies: ["LipiCore", "LipiLayout", "LipiFixtures"]),
+        .executableTarget(name: "lipi-bench", dependencies: ["LipiCore", "LipiLayout", "LipiEditor", "LipiFixtures"]),
         .executableTarget(name: "lipi-fixtures", dependencies: ["LipiFixtures"]),
         // The byte-preservation check over any folder (ByteRoundTrip).
         .executableTarget(name: "lipi-roundtrip", dependencies: ["LipiApp", "LipiFixtures"]),

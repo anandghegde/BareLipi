@@ -106,7 +106,18 @@ public final class TextKit2Layout {
             result.append(typesetter.attributedString(" ", role: .body))
             result.deleteCharacters(in: NSRange(location: 0, length: 1))
         }
+        Self.appKitColors(result)
         return (result, starts)
+    }
+
+    /// The typesetter colours runs for Core Text only; TextKit draws with the
+    /// AppKit attribute.
+    static func appKitColors(_ string: NSMutableAttributedString) {
+        let whole = NSRange(location: 0, length: string.length)
+        string.enumerateAttribute(.ctForeground, in: whole) { value, range, _ in
+            guard let value, CFGetTypeID(value as CFTypeRef) == CGColor.typeID else { return }
+            string.addAttribute(.foregroundColor, value: NSColor(cgColor: value as! CGColor) ?? .textColor, range: range)
+        }
     }
 
     private func lastAttributes(of string: NSAttributedString) -> [NSAttributedString.Key: Any] {

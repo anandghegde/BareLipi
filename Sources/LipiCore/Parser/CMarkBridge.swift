@@ -140,6 +140,19 @@ private struct Converter {
     var emoji = false
     var headingAttributes = false
 
+    /// Nesting caps. cmark-gfm accepts any depth (`>>>>…`, `- - - …`,
+    /// `*a *a *a…`), but every walk over the value AST — this converter,
+    /// projection, reveal, accessibility, synthesized `==`/`hash`, even
+    /// releasing the arrays — recurses once per level, and parsing runs on
+    /// 512 KB worker stacks. Containers deeper than `maxBlockDepth` keep
+    /// their content as one paragraph of raw source lines; inlines deeper
+    /// than `maxInlineDepth` become raw source text. Both are far beyond
+    /// anything written by hand.
+    static let maxBlockDepth = 32
+    static let maxInlineDepth = 32
+    var blockDepth = 0
+    var inlineDepth = 0
+
     var count: Int { bytes.count }
 
     // MARK: Positions
@@ -335,6 +348,10 @@ private struct Converter {
         while i > 0 && blocks[i - 1].range.lowerBound > def.range.lowerBound { i -= 1 }
         if i > 0, blocks[i - 1].kind.isContainer, def.range.lowerBound < blocks[i - 1].range.upperBound {
             insert(def, into: &blocks[i - 1].children)
+        } else if i > 0, blocks[i - 1].range.contains(def.range.lowerBound) {
+            // Inside a leaf: only a container past the nesting cap, whose
+            // content (definitions included) is kept as raw text.
+            return
         } else {
             blocks.insert(def, at: i)
         }
@@ -510,10 +527,16 @@ private struct Converter {
                             endLine: Int32, endColumn: Int) -> Block {
         let start = offset(line: line, column: column)
         var children: [Block] = []
-        var child = cmark_node_first_child(node)
-        while let c = child {
-            if let b = block(c) { children.append(b) }
-            child = cmark_node_next(c)
+        if blockDepth >= Self.maxBlockDepth {
+            if let raw = rawContent(of: node) { children.append(raw) }
+        } else {
+            blockDepth += 1
+            var child = cmark_node_first_child(node)
+            while let c = child {
+                if let b = block(c) { children.append(b) }
+                child = cmark_node_next(c)
+            }
+            blockDepth -= 1
         }
         // cmark's own end can include trailing blank lines; trim them, but never
         // end before the last child.
@@ -522,6 +545,46 @@ private struct Converter {
         if let last = children.last { end = max(end, last.range.upperBound) }
         end = max(start, end)
         return Block(id: ids.make(), range: start..<end, kind: kind, children: children)
+    }
+
+    /// The content of a container past `maxBlockDepth`, without descending
+    /// into it: one paragraph from its first child's start to its last
+    /// child's last line, each line raw source text (container prefixes
+    /// included), joined by line breaks. `nil` when it has no children.
+    mutating func rawContent(of node: OpaquePointer) -> Block? {
+        guard let first = cmark_node_first_child(node), let last = cmark_node_last_child(node) else { return nil }
+        let start = offset(line: cmark_node_get_start_line(first), column: Int(cmark_node_get_start_column(first)) - 1)
+        var end = lineContentEnd(cmark_node_get_end_line(last))
+        while end > start && isWhitespace(bytes[end - 1]) { end -= 1 }
+        guard end > start else { return nil }
+        // Later lines skip the outer containers' prefixes (`>`, spaces, tabs)
+        // up to the first line's indent; those containers are rendered.
+        let indent = start - lineStarts[lineIndex(containing: start)]
+        var inlines: [Inline] = []
+        var p = start
+        var lineBegin = start
+        while p < end {
+            let b = bytes[p]
+            guard b == 0x0A || b == 0x0D else { p += 1; continue }
+            var q = p + 1
+            if b == 0x0D, q < end, bytes[q] == 0x0A { q += 1 }
+            if p > lineBegin { inlines.append(rawText(lineBegin..<p)) }
+            inlines.append(Inline(id: ids.make(), range: p..<q, kind: .lineBreak))
+            p = q
+            lineBegin = q
+            let limit = min(q + indent, end)
+            while lineBegin < limit, bytes[lineBegin] == 0x3E || isSpaceOrTab(bytes[lineBegin]) { lineBegin += 1 }
+            p = lineBegin
+        }
+        if end > lineBegin { inlines.append(rawText(lineBegin..<end)) }
+        return Block(id: ids.make(), range: start..<end, kind: .paragraph, inlines: inlines)
+    }
+
+    /// Source bytes shown as they are (`isApproximate` makes projection copy
+    /// them instead of decoding escapes).
+    mutating func rawText(_ range: Range<Int>) -> Inline {
+        Inline(id: ids.make(), range: range, kind: .text(String(decoding: slice(range), as: UTF8.self)),
+               isApproximate: true)
     }
 
     // MARK: Tables
@@ -657,7 +720,10 @@ private struct Converter {
         end = min(max(end, start), bounds.upperBound)
         let range = start..<end
         let approximate = (lipi_node_get_flags(node) & LIPI_FLAG_APPROX) != 0
+        if inlineDepth >= Self.maxInlineDepth, cmark_node_first_child(node) != nil { return rawText(range) }
+        inlineDepth += 1
         let children = inlines(of: node, bounds: range, map: map)
+        inlineDepth -= 1
         return Inline(id: ids.make(), range: range, kind: kind, children: children, isApproximate: approximate)
     }
 }

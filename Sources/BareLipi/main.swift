@@ -19,7 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var editor: EditorView!
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    /// The window is built and drawn before `finishLaunching` does the rest
+    /// of its work, as the app bundle's `EarlyWindow` is.
+    func applicationWillFinishLaunching(_ notification: Notification) {
         let tracker = LaunchTracker.shared
         tracker.didFinishLaunching()
         let text: String
@@ -41,11 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.appearance = NSAppearance(named: options.theme.isDark ? .darkAqua : .aqua)
         EditorHost.useEightBitBacking(for: window, editor: editor)
         tracker.attach(editor)
-        window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(editor)
-        NSApp.activate()
         tracker.phases.window = CACurrentMediaTime() - mark
         tracker.phases.shown = CACurrentMediaTime()
+        EarlyWindow.present(window, firstResponder: editor)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

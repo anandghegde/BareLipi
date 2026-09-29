@@ -6,6 +6,12 @@ import LipiLayout
 
 setvbuf(stdout, nil, _IONBF, 0)
 
+if CommandLine.arguments.contains("--huge") {
+    let keys = CommandLine.arguments.firstIndex(of: "--keys").flatMap { Int(CommandLine.arguments[$0 + 1]) }
+    hugeBlockBench(keystrokes: keys ?? 50)
+    exit(0)
+}
+
 /// Phase 0 micro-benchmarks. Run with `swift run -c release lipi-bench`.
 /// Rope exit criterion (PRD §10, Phase 0): random insert into a 1 MB document
 /// under 5 µs. The layout section at the end is the ADR-002 spike:

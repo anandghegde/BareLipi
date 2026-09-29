@@ -603,6 +603,31 @@ public enum PathologicalFixture: String, CaseIterable, Sendable {
     }
 }
 
+// MARK: - Huge blocks
+
+/// Documents that are one very large block, for editing inside it (the
+/// windowed paragraph layout): the pathological 1 MB paragraph and the
+/// byte corpus's 256 KB line under a heading, byte for byte.
+public enum HugeBlockFixture: String, CaseIterable, Sendable {
+    case paragraph1MB = "paragraph-1mb"
+    case line256k = "long-line-256k"
+
+    public var fileName: String { rawValue + ".md" }
+
+    public func text() -> String {
+        switch self {
+        case .paragraph1MB:
+            return String(decoding: PathologicalFixture.paragraph1MB.data(), as: UTF8.self)
+        case .line256k:
+            // The generator `ByteCorpus` uses for `long-line-256k.md`.
+            var rng = SplitMix64(seed: 0xB17E_0001)
+            var long = ""
+            while long.utf8.count < 256 * 1024 { long += rng.pick(Words.latin) + " " }
+            return "# Long\n\n" + long + "\n"
+        }
+    }
+}
+
 // MARK: - Writing
 
 public enum Fixtures {

@@ -42,6 +42,8 @@ public struct TypesetCell {
     /// Hash of everything above; equal keys mean an identical layout at the
     /// same width, which the table layout uses to reuse cells.
     public let key: UInt64
+    /// Some of the text is in a right-to-left script.
+    public var containsRightToLeft = false
 
     public var length: Int { attributed.length }
 }
@@ -296,7 +298,8 @@ public struct Typesetter {
         return TypesetCell(attributed: result, role: role, style: style, lineHeight: lineHeight,
                            lineHeightClass: tall ? .tall : .standard, decorations: decorations, alignment: alignment,
                            isRightToLeft: isRTL, key: key(text: text, runs: cell.runs, role: role, alignment: alignment,
-                                                          highlight: highlight?.result.stamp ?? 0))
+                                                          highlight: highlight?.result.stamp ?? 0),
+                           containsRightToLeft: runs.contains { $0.script.isRightToLeft })
     }
 
     /// Font for an inline style inside a role, resolved through the cascade.

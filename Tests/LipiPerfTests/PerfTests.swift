@@ -176,6 +176,46 @@ final class PerfTests: XCTestCase {
         measureScroll(.tenMB, key: "scroll.10mb", frameBudget: Self.frame60, maxSteps: 200)
     }
 
+    // MARK: Huge blocks
+
+    /// Keystrokes inside one very large block (`HugeBlockFixture`): the
+    /// windowed, incremental paragraph layout re-breaks only the lines around
+    /// the edit. The rest of each keystroke is parse and projection, which
+    /// still read the whole block.
+    private func measureHugeBlock(_ fixture: HugeBlockFixture, keystrokes: Int, p50Budget: Double, p99Budget: Double) {
+        let key = "key.\(fixture.rawValue)"
+        let text = fixture.text()
+        var screen: Screen!
+        let open = seconds {
+            screen = Screen(text)
+            screen.draw(atY: 0)
+        }
+        var rng = SplitMix64(seed: 5)
+        var samples: [Double] = []
+        for (n, fraction) in [0.02, 0.5, 0.98].enumerated() {
+            let caret = screen.controller.rope.floorScalarBoundary(Int(Double(screen.controller.count) * fraction))
+            screen.controller.moveCaret(to: caret)
+            screen.drawAroundCaret(screen.controller.caretRect(forSource: caret))
+            for k in 0..<Perf.scaled(keystrokes) / 3 + (n == 0 ? 5 : 0) {
+                let word = rng.pick(Words.latin)
+                let text = rng.chance(0.15) ? " " : String(word[word.index(word.startIndex, offsetBy: rng.below(word.count))])
+                let t = screen.keystroke(text) * 1000
+                // The first keystrokes warm the glyph caches.
+                if n > 0 || k >= 5 { samples.append(t) }
+            }
+        }
+        let sorted = samples.sorted()
+        Perf.report(key + ".open", open * 1000, unit: "ms", budget: nil, note: "\(text.utf8.count / 1024) KB, open and first screen")
+        Perf.report(key + ".p50", percentile(sorted, 0.5), unit: "ms", budget: p50Budget, note: "start, middle and end of the block")
+        Perf.report(key + ".p99", percentile(sorted, 0.99), unit: "ms", budget: p99Budget, note: String(format: "max %.2f ms", sorted.last ?? 0))
+    }
+
+    func testKeystrokeInHugeBlocks() throws {
+        if !Perf.isRelease { throw XCTSkip("huge-block fixtures run in release only (swift test -c release)") }
+        measureHugeBlock(.paragraph1MB, keystrokes: 150, p50Budget: Self.frame60, p99Budget: 25)
+        measureHugeBlock(.line256k, keystrokes: 150, p50Budget: Self.frame120, p99Budget: Self.frame60)
+    }
+
     // MARK: Find (P0-10)
 
     /// Find over the 10 MB fixture. The PRD budget is 2 s per GB, so 20 ms

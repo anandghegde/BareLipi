@@ -141,14 +141,13 @@ struct CommandDocument {
 
     func lineStart(_ p: Int) -> Int { rope.lineStart(rope.line(at: clamped(p))) }
 
-    /// End of the line's content, before `\n` or `\r\n`.
+    /// End of the line's content, before `\n`, `\r\n` or a lone `\r`
+    /// (the rope's lines end where cmark-gfm's do).
     func lineContentEnd(_ p: Int) -> Int {
         let r = rope.lineRange(rope.line(at: clamped(p)))
         var e = r.upperBound
-        if e > r.lowerBound, byte(e - 1) == 0x0A {
-            e -= 1
-            if e > r.lowerBound, byte(e - 1) == 0x0D { e -= 1 }
-        }
+        if e > r.lowerBound, byte(e - 1) == 0x0A { e -= 1 }
+        if e > r.lowerBound, byte(e - 1) == 0x0D { e -= 1 }
         return e
     }
 

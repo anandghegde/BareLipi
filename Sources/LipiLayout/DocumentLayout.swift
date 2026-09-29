@@ -106,6 +106,9 @@ public final class DocumentLayout {
     /// Layouts of entries replaced by the last `update`, kept for one round
     /// so tables can re-layout incrementally from them.
     private var stale: [Int: EntryLayout] = [:]
+    /// Whether the last `update` kept every unchanged entry at its index
+    /// (so only the changed entries can have moved or redrawn).
+    public private(set) var updatedInPlace = false
 
     public init(typesetter: Typesetter, cache: LayoutCache = LayoutCache(), viewportWidth: CGFloat = 800) {
         self.typesetter = typesetter
@@ -213,7 +216,8 @@ public final class DocumentLayout {
     /// layout; changed entries keep their old height as the estimate until
     /// they are laid out again.
     public func update(projection new: Projection, result: Projection.UpdateResult) {
-        if updateInPlace(projection: new, result: result) { return }
+        updatedInPlace = updateInPlace(projection: new, result: result)
+        if updatedInPlace { return }
         let old = projection
         var oldByID: [NodeID: Int] = [:]
         oldByID.reserveCapacity(old.entries.count)

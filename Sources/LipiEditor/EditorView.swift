@@ -19,6 +19,14 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     /// Called once, after the first draw.
     public var onFirstDraw: (() -> Void)?
     private var hasDrawn = false
+    /// The caret as last drawn, and whether that draw showed a selection,
+    /// marked text, find matches or focus dimming (`redrawRect(for:)`).
+    private var drawnCaret = CGRect.null
+    private var drewOverlay = true
+    /// What changes invalidated since the last render: nil for the whole
+    /// view, else the union of their rects (tests compare a partial repaint
+    /// with a full one).
+    public private(set) var pendingRedraw: CGRect? = nil
     private var pendingKeystroke: (start: DispatchTime, pipeline: Double, signpost: OSSignpostIntervalState)?
     private var mouseAnchor: Int?
     private var linkPopover: LinkPopover?
@@ -119,7 +127,13 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         }
         caret.restart()
         syncFrameHeight()
-        needsDisplay = true
+        if let rect = redrawRect(for: change) {
+            pendingRedraw = pendingRedraw?.union(rect)
+            setNeedsDisplay(rect)
+        } else {
+            pendingRedraw = nil
+            needsDisplay = true
+        }
         postAccessibilityChange(textChanged: change.textChanged)
         if change.textChanged, footnoteState.shown != nil { closeFootnote() }
         updateEmojiCompletion(textChanged: change.textChanged)
@@ -135,6 +149,23 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
         } else {
             scrollCaretToVisible(change.caretRect)
         }
+    }
+
+    /// A keystroke usually redraws one entry: repaint that band and the
+    /// caret before and after instead of the whole view. Anything that can
+    /// paint elsewhere (selection, marked text, find, focus and typewriter
+    /// modes, moved entries) repaints everything, as before.
+    private func redrawRect(for change: EditorChange) -> CGRect? {
+        guard !change.structureChanged, change.viewportShift == 0, !drewOverlay, !hasOverlay, !typewriterMode,
+              var rect = controller.redrawRect(visible: visibleRect) else { return nil }
+        rect = rect.union(drawnCaret).union(change.caretRect.insetBy(dx: -2, dy: -1))
+        // Whole points: a clip edge inside a pixel would blend old and new.
+        return rect.intersection(bounds).integral
+    }
+
+    private var hasOverlay: Bool {
+        !controller.selection.isEmpty || controller.hasMarkedText || controller.blockSelection != nil
+            || findSession?.isActive == true || focusMode || writingState.transition != nil
     }
 
     private func scrollCaretToVisible(_ rect: CGRect) {
@@ -262,6 +293,8 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
     /// into a y-down context (also used headless by the tests and harness).
     public func render(in ctx: CGContext, dirty: CGRect) {
         let colors = controller.theme.colors
+        drewOverlay = hasOverlay
+        pendingRedraw = .null
         ctx.setFillColor(colors.bg.cgColor)
         ctx.fill(dirty)
         drawFindHighlights(in: ctx, dirty: dirty)
@@ -298,6 +331,7 @@ public final class EditorView: NSView, @preconcurrency NSTextInputClient {
             if rect.intersects(dirty) {
                 ctx.setFillColor(colors.caret.cgColor)
                 ctx.fill(rect)
+                drawnCaret = rect
             }
         }
     }

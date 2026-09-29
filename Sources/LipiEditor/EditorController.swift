@@ -35,6 +35,10 @@ public final class EditorController {
     public let layout: DocumentLayout
     public private(set) var textKit: TextKit2Layout?
     private var textKitEntryIDs: [NodeID] = []
+    /// The entries the last `refresh` changed, with their heights before
+    /// it, and the code block it scrolled sideways (`redrawRect`); nil
+    /// when the change reaches further.
+    private var lastDamage: (entries: [(index: Int, height: CGFloat)], scrolled: Int?)?
     public private(set) var selection: SelectionModel
     public private(set) var marked: MarkedText?
     public private(set) var stats = Stats()
@@ -779,12 +783,19 @@ public final class EditorController {
             } else {
                 layout.growOnlyEntry = nil
             }
+            let tracked = !structure && result.changedEntries.count <= 16
+            let heights: [(index: Int, height: CGFloat)] = tracked
+                ? result.changedEntries.sorted().map { (index: $0, height: layout.height(ofEntry: $0)) } : []
             layout.update(projection: projection, result: result)
+            lastDamage = tracked && layout.updatedInPlace ? (heights, nil) : nil
         case .textkit2:
             structure = updateTextKit(result)
+            lastDamage = nil
         }
         // Unwrapped code scrolls sideways to keep the caret in view.
-        if engine == .lipi, let p = projection.position(forSource: selection.head) { layout.revealCodeCaret(at: p) }
+        if engine == .lipi, let p = projection.position(forSource: selection.head), layout.revealCodeCaret(at: p) {
+            lastDamage?.scrolled = p.entry
+        }
         let rect = caretRect(forSource: selection.head)
         let seconds = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
         stats.lastPipelineSeconds = seconds
@@ -1123,6 +1134,40 @@ public final class EditorController {
         case .lipi: return layout.layoutIfNeeded(in: rect.minY...rect.maxY)
         case .textkit2: textKit?.ensureLayout(toY: rect.maxY); return []
         }
+    }
+
+    /// The band of the document the last change redrew, full width, or nil
+    /// when anything outside it may have changed too: entries moved, a
+    /// visible entry lost its layout, or too many entries changed. Lays out
+    /// `visible` first, as the next draw would, to see whether the heights
+    /// held. Null when only the caret moved.
+    public func redrawRect(visible: CGRect) -> CGRect? {
+        guard engine == .lipi, let damage = lastDamage else { return nil }
+        let first = layout.entryIndex(atY: visible.minY) ?? layout.entryCount
+        var tops: [CGFloat] = []
+        var i = first
+        while i < layout.entryCount, layout.y(ofEntry: i) <= visible.maxY {
+            // Dropped by other means (theme, width, highlights) since it
+            // was drawn: the whole view is stale.
+            guard layout.isLaidOut(i) || damage.entries.contains(where: { $0.index == i }) else { return nil }
+            tops.append(layout.y(ofEntry: i))
+            i += 1
+        }
+        let total = layout.contentHeight
+        layout.layoutIfNeeded(in: visible.minY...visible.maxY)
+        guard layout.contentHeight == total, tops.indices.allSatisfy({ layout.y(ofEntry: first + $0) == tops[$0] }) else { return nil }
+        var rect = CGRect.null
+        func band(_ i: Int) -> CGRect {
+            CGRect(x: visible.minX, y: layout.y(ofEntry: i), width: visible.width, height: layout.height(ofEntry: i))
+        }
+        for (i, height) in damage.entries {
+            guard i < layout.entryCount, layout.height(ofEntry: i) == height else { return nil }
+            rect = rect.union(band(i))
+        }
+        if let i = damage.scrolled, i < layout.entryCount { rect = rect.union(band(i)) }
+        // Glyphs reach past their line: repaint a line either side so the
+        // neighbours' ascenders and descenders are drawn again too.
+        return rect.isNull ? rect : rect.insetBy(dx: 0, dy: -lineHeight)
     }
 
     /// Draws the document into a y-down context (§7.4 step 9).

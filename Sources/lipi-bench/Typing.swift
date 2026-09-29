@@ -6,7 +6,7 @@ import LipiFixtures
 import LipiLayout
 
 /// Keystroke cost through `EditorController`, as the view runs it: insert,
-/// then lay out and draw the 1200 × 800 @2x screen around the caret. Plain
+/// then lay out and draw what changed on the 1200 × 800 @2x screen. Plain
 /// prose, a document of footnotes and one of colour emoji, typing in the
 /// middle. `lipi-bench --typing [--keys N] [--rounds R] [--only NAME]` runs
 /// this section alone and prints the median and p90 per fixture (medians
@@ -31,28 +31,40 @@ func typingBench(keystrokes: Int = 400, rounds: Int = 5, only: String? = nil) {
         var medians: [Double] = [], p90s: [Double] = []
         for _ in 0..<rounds {
             let controller = EditorController(text: text, viewportWidth: size.width)
-            func draw(around rect: CGRect) {
-                let y = max(0, (rect.midY - size.height / 2).rounded())
-                let screen = CGRect(x: 0, y: y, width: size.width, height: size.height)
-                controller.prepare(screen.insetBy(dx: 0, dy: -size.height))
+            var screen = CGRect.null
+            var caret = CGRect.null
+            // As `EditorView` does: the screen scrolls only when the caret
+            // leaves it, and a change repaints its `redrawRect` when it has one.
+            func draw(_ change: EditorChange) {
+                var dirty = screen
+                if screen.isNull || !screen.contains(change.caretRect) {
+                    let y = max(0, (change.caretRect.midY - size.height / 2).rounded())
+                    screen = CGRect(x: 0, y: y, width: size.width, height: size.height)
+                    dirty = screen
+                    controller.prepare(screen.insetBy(dx: 0, dy: -size.height))
+                } else if let rect = controller.redrawRect(visible: screen) {
+                    dirty = rect.union(caret).union(change.caretRect.insetBy(dx: -2, dy: -1)).intersection(screen).integral
+                }
+                caret = change.caretRect
                 bitmap.saveGState()
-                bitmap.translateBy(x: 0, y: -y)
+                bitmap.translateBy(x: 0, y: -screen.minY)
+                bitmap.clip(to: dirty)
                 bitmap.setFillColor(controller.theme.colors.bg.cgColor)
-                bitmap.fill(screen)
-                controller.draw(in: bitmap, dirty: screen)
+                bitmap.fill(dirty)
+                controller.draw(in: bitmap, dirty: dirty)
                 bitmap.restoreGState()
             }
             // Middle of the document, at the end of a paragraph line.
-            var caret = controller.rope.floorScalarBoundary(controller.count / 2)
-            let line = controller.rope.line(at: caret)
-            caret = max(controller.rope.lineRange(line).lowerBound, controller.rope.lineRange(line).upperBound - 1)
-            draw(around: controller.moveCaret(to: caret).caretRect)
-            for _ in 0..<50 { draw(around: controller.insert("x").caretRect) }
+            var offset = controller.rope.floorScalarBoundary(controller.count / 2)
+            let line = controller.rope.line(at: offset)
+            offset = max(controller.rope.lineRange(line).lowerBound, controller.rope.lineRange(line).upperBound - 1)
+            draw(controller.moveCaret(to: offset))
+            for _ in 0..<50 { draw(controller.insert("x")) }
             var samples: [Double] = []
             samples.reserveCapacity(keystrokes)
             for k in 0..<keystrokes {
                 let t0 = DispatchTime.now().uptimeNanoseconds
-                draw(around: controller.insert(k % 6 == 5 ? " " : "k").caretRect)
+                draw(controller.insert(k % 6 == 5 ? " " : "k"))
                 samples.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1000)
             }
             samples.sort()
